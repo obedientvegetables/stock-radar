@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m utils.db:*)",
+      "Bash(python3:*)",
+      "Bash(chmod:*)",
+      "Bash(pip3 install:*)",
+      "Bash(curl:*)",
+      "Bash(source venv/bin/activate)",
+      "Bash(source:*)",
+      "Bash(pip install:*)",
+      "Bash(brew install:*)",
+      "Bash(pgrep:*)",
+      "Bash(sqlite3:*)",
+      "Bash(ps:*)",
+      "Bash(lsof:*)",
+      "Bash(kill:*)",
+      "Bash(ls:*)",
+      "Bash(grep:*)",
+      "Bash(pkill:*)",
+      "Bash(tree:*)",
+      "Bash(./scripts/cron_morning.sh:*)",
+      "Bash(./scripts/cron_evening.sh:*)",
+      "Bash(crontab:*)"
+    ]
+  }
+}

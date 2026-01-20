@@ -1,0 +1,13 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.db
+*.log
+.env
+.DS_Store
+*.swp
+*.swo
+data/
+logs/
+output/

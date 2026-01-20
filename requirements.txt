@@ -1,0 +1,42 @@
+# Stock Radar Dependencies
+
+# Data Collection
+yfinance>=0.2.36
+requests>=2.31.0
+feedparser>=6.0.10
+lxml>=5.1.0
+
+# Data Processing
+pandas>=2.1.0
+numpy>=1.24.0
+
+# Sentiment Analysis
+vaderSentiment>=3.3.2
+
+# Database
+# (sqlite3 is built into Python)
+
+# Configuration
+python-dotenv>=1.0.0
+
+# CLI
+click>=8.1.0
+
+# Email
+# (smtplib is built into Python)
+
+# Market Calendar
+pandas-market-calendars>=4.3.0
+
+# Statistics (for validation)
+scipy>=1.11.0
+
+# Visualization (for validation reports)
+matplotlib>=3.8.0
+
+# HTTP client with rate limiting
+ratelimit>=2.2.1
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0

@@ -1,0 +1,74 @@
+# Stock Radar - Environment Configuration
+# Copy this file to .env and fill in your values
+# cp env_template.txt .env
+# nano .env
+
+# ============================================
+# REQUIRED SETTINGS
+# ============================================
+
+# SEC EDGAR API (Required)
+# SEC requires a valid email for rate limiting compliance
+# Format: AppName your-email@example.com
+SEC_USER_AGENT=StockRadar your-email@example.com
+
+# ============================================
+# EMAIL SETTINGS (Required for daily alerts)
+# ============================================
+
+# SMTP Server Settings
+EMAIL_SMTP_SERVER=smtp.gmail.com
+EMAIL_SMTP_PORT=587
+
+# Gmail Account
+# For Gmail, you need an App Password (not your regular password)
+# 1. Go to Google Account > Security > 2-Step Verification (enable if not already)
+# 2. Go to Google Account > Security > App passwords
+# 3. Create a new app password for "Mail"
+# 4. Use that 16-character password below
+EMAIL_USERNAME=your-gmail@gmail.com
+EMAIL_PASSWORD=your-app-specific-password
+
+# Email Recipients
+EMAIL_TO=your-email@example.com
+EMAIL_FROM=Stock Radar
+
+# ============================================
+# API KEYS (Optional but recommended)
+# ============================================
+
+# Adanos API for Reddit sentiment data
+# Sign up at https://adanos.org to get a free API key
+ADANOS_API_KEY=
+
+# StockTwits API (Optional)
+# Get token from https://api.stocktwits.com/developers
+STOCKTWITS_ACCESS_TOKEN=
+
+# ============================================
+# SCORING THRESHOLDS (Optional - defaults shown)
+# ============================================
+
+# Minimum scores to trigger signals
+# INSIDER_MIN_SCORE=15
+# OPTIONS_MIN_SCORE=15
+# SOCIAL_MIN_SCORE=10
+
+# ============================================
+# RISK MANAGEMENT (Optional - defaults shown)
+# ============================================
+
+# Position sizing
+# MAX_POSITION_PCT=0.10     # Max 10% of portfolio per trade
+# DEFAULT_STOP_PCT=0.05     # 5% stop loss
+# DEFAULT_TARGET_PCT=0.10   # 10% profit target
+
+# Paper trading portfolio
+# PAPER_PORTFOLIO_SIZE=10000
+
+# ============================================
+# DASHBOARD (Optional - defaults shown)
+# ============================================
+
+# PORT=5001
+# DEBUG=True
