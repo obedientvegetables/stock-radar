@@ -139,6 +139,204 @@ def api_signals_today():
     return jsonify({"signals": signals, "date": today})
 
 
+# Stock of the Day configuration
+STOCK_OF_DAY_MIN_SCORE = 25  # Minimum score to be Stock of the Day
+STOCK_OF_DAY_MIN_INSIDER = 5  # Must have some insider activity
+DEFAULT_STOP_PCT = 0.10  # 10% stop loss
+DEFAULT_TARGET_PCT = 0.20  # 20% target
+
+
+@app.route("/api/stock-of-the-day")
+def api_stock_of_the_day():
+    """Get the Stock of the Day - the single best pick, if any.
+
+    Selection criteria:
+    - Must have insider buying activity (insider_score > 0)
+    - Must have total_score >= 25
+    - Highest scoring signal wins
+
+    Returns entry/stop/target automatically calculated.
+    """
+    conn = get_db()
+    cur = conn.cursor()
+
+    today = date.today().isoformat()
+
+    # Find Stock of the Day - highest score with insider activity
+    cur.execute("""
+        SELECT id, date, ticker, total_score, tier, action,
+               insider_score, options_score, social_score, technical_score,
+               entry_price, stop_price, target_price, notes
+        FROM signals
+        WHERE date = ?
+          AND insider_score >= ?
+          AND total_score >= ?
+        ORDER BY total_score DESC
+        LIMIT 1
+    """, (today, STOCK_OF_DAY_MIN_INSIDER, STOCK_OF_DAY_MIN_SCORE))
+
+    row = cur.fetchone()
+
+    # Also get the best candidate that didn't qualify
+    cur.execute("""
+        SELECT id, date, ticker, total_score, tier, action,
+               insider_score, options_score, social_score, technical_score,
+               entry_price, notes
+        FROM signals
+        WHERE date = ?
+          AND (insider_score < ? OR total_score < ?)
+        ORDER BY total_score DESC
+        LIMIT 1
+    """, (today, STOCK_OF_DAY_MIN_INSIDER, STOCK_OF_DAY_MIN_SCORE))
+
+    best_candidate = cur.fetchone()
+
+    conn.close()
+
+    if row:
+        signal = dict(row)
+        ticker = signal['ticker']
+
+        # Get fresh current price
+        current_price = get_current_price(ticker)
+        if current_price:
+            signal['entry_price'] = round(current_price, 2)
+            signal['stop_price'] = round(current_price * (1 - DEFAULT_STOP_PCT), 2)
+            signal['target_price'] = round(current_price * (1 + DEFAULT_TARGET_PCT), 2)
+
+        # Determine confidence level
+        insider = signal.get('insider_score', 0)
+        options = signal.get('options_score', 0)
+        social = signal.get('social_score', 0)
+
+        if insider >= 15 and options >= 10 and social >= 5:
+            confidence = 'HIGH'
+        elif insider >= 10 and (options >= 10 or social >= 5):
+            confidence = 'MEDIUM'
+        else:
+            confidence = 'MEDIUM'
+
+        signal['confidence'] = confidence
+
+        # Generate explanation
+        explanations = []
+        if insider >= 15:
+            explanations.append('CEO/CFO purchase')
+        elif insider >= 10:
+            explanations.append('Insider buying')
+        elif insider >= 5:
+            explanations.append('Multiple insider buys')
+
+        if options >= 15:
+            explanations.append('Strong options flow')
+        elif options >= 10:
+            explanations.append('Bullish options activity')
+
+        if social >= 10:
+            explanations.append('High social momentum')
+        elif social >= 5:
+            explanations.append('Social confirmation')
+
+        signal['explanation'] = ' + '.join(explanations) if explanations else 'Signal alignment detected'
+
+        return jsonify({
+            "has_pick": True,
+            "stock_of_the_day": signal,
+            "best_candidate": None,
+            "date": today,
+            "threshold": STOCK_OF_DAY_MIN_SCORE
+        })
+
+    # No Stock of the Day - return best candidate with what's missing
+    if best_candidate:
+        candidate = dict(best_candidate)
+
+        # Figure out what's missing
+        missing = []
+        insider = candidate.get('insider_score', 0)
+        social = candidate.get('social_score', 0)
+        total = candidate.get('total_score', 0)
+
+        if insider < STOCK_OF_DAY_MIN_INSIDER:
+            missing.append('needs insider confirmation')
+        if social == 0:
+            missing.append('needs social confirmation')
+        if total < STOCK_OF_DAY_MIN_SCORE:
+            missing.append(f'score below {STOCK_OF_DAY_MIN_SCORE}')
+
+        candidate['missing'] = missing
+
+        return jsonify({
+            "has_pick": False,
+            "stock_of_the_day": None,
+            "best_candidate": candidate,
+            "date": today,
+            "threshold": STOCK_OF_DAY_MIN_SCORE
+        })
+
+    return jsonify({
+        "has_pick": False,
+        "stock_of_the_day": None,
+        "best_candidate": None,
+        "date": today,
+        "threshold": STOCK_OF_DAY_MIN_SCORE
+    })
+
+
+@app.route("/api/watchlist")
+def api_watchlist():
+    """Get watchlist candidates - secondary signals below Stock of the Day.
+
+    Filters out low-activity signals (score < 15) to keep the list focused.
+    Returns signal indicators as booleans for clean display.
+    """
+    conn = get_db()
+    cur = conn.cursor()
+
+    today = date.today().isoformat()
+
+    # Get signals that have meaningful activity (score >= 15)
+    # Exclude the Stock of the Day (handled separately)
+    cur.execute("""
+        SELECT id, date, ticker, total_score, tier, action,
+               insider_score, options_score, social_score, technical_score,
+               entry_price, stop_price, target_price, notes
+        FROM signals
+        WHERE date = ?
+          AND total_score >= 15
+        ORDER BY total_score DESC
+        LIMIT 10
+    """, (today,))
+
+    signals = []
+    for row in cur.fetchall():
+        signal = dict(row)
+
+        # Add boolean signal indicators
+        signal['has_insider'] = (signal.get('insider_score', 0) or 0) >= 5
+        signal['has_options'] = (signal.get('options_score', 0) or 0) >= 5
+        signal['has_social'] = (signal.get('social_score', 0) or 0) >= 5
+
+        # Update prices with current market data
+        ticker = signal['ticker']
+        current_price = get_current_price(ticker)
+        if current_price:
+            signal['current_price'] = round(current_price, 2)
+            signal['entry_price'] = round(current_price, 2)
+            signal['stop_price'] = round(current_price * (1 - DEFAULT_STOP_PCT), 2)
+            signal['target_price'] = round(current_price * (1 + DEFAULT_TARGET_PCT), 2)
+
+        signals.append(signal)
+
+    conn.close()
+
+    return jsonify({
+        "signals": signals,
+        "date": today,
+        "threshold": STOCK_OF_DAY_MIN_SCORE
+    })
+
+
 # ============================================================================
 # API ENDPOINTS - POSITIONS
 # ============================================================================
