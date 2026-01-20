@@ -1,0 +1,21 @@
+[Unit]
+Description=Stock Radar Flask Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=ned_lindau
+Group=ned_lindau
+WorkingDirectory=/home/ned_lindau/stock-radar
+Environment="PATH=/home/ned_lindau/stock-radar/venv/bin"
+EnvironmentFile=/home/ned_lindau/stock-radar/.env
+ExecStart=/home/ned_lindau/stock-radar/venv/bin/python app.py
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=append:/home/ned_lindau/stock-radar/logs/flask.log
+StandardError=append:/home/ned_lindau/stock-radar/logs/flask.log
+
+[Install]
+WantedBy=multi-user.target
