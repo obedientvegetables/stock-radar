@@ -84,11 +84,25 @@ def api_health():
 
     conn.close()
 
+    # Calculate next update time (8:30 AM ET next trading day)
+    now = datetime.now()
+    next_update = now.replace(hour=8, minute=30, second=0, microsecond=0)
+
+    # If we're past 8:30 AM today, next update is tomorrow
+    if now.hour >= 8 and now.minute >= 30:
+        next_update += timedelta(days=1)
+
+    # Skip weekends
+    while next_update.weekday() >= 5:  # Saturday = 5, Sunday = 6
+        next_update += timedelta(days=1)
+
     return jsonify({
         "status": "healthy" if not errors else "warning",
         "last_collection": last_insider,
         "last_signal_date": last_signal,
         "market_open": is_market_open(),
+        "next_update": next_update.strftime("%I:%M %p"),
+        "next_update_full": next_update.isoformat(),
         "errors": errors,
         "timestamp": datetime.now().isoformat()
     })
@@ -98,25 +112,162 @@ def api_health():
 # API ENDPOINTS - SIGNALS
 # ============================================================================
 
+# Stock of the Day selection thresholds
+STOCK_OF_DAY_MIN_SCORE = 25  # Minimum total score to qualify
+STOCK_OF_DAY_STOP_PCT = 0.10  # 10% stop loss
+STOCK_OF_DAY_TARGET_PCT = 0.20  # 20% target
+
+
+@app.route("/api/stock-of-the-day")
+def api_stock_of_the_day():
+    """
+    Get the Stock of the Day - a single high-confidence pick.
+
+    Selection criteria:
+    - Must have insider buying activity (insider_score > 0)
+    - Must have total_score >= 25
+    - Highest scoring signal that meets criteria
+
+    Returns either a confident pick or "no pick today" state.
+    """
+    conn = get_db()
+    cur = conn.cursor()
+
+    today = date.today().isoformat()
+
+    # Get the best candidate that meets our criteria
+    # Priority: highest total score, must have insider activity, score >= 25
+    cur.execute("""
+        SELECT id, date, ticker, total_score, tier, action,
+               insider_score, options_score, social_score,
+               entry_price, stop_price, target_price,
+               position_size, notes
+        FROM signals
+        WHERE date = ?
+          AND insider_score > 0
+          AND total_score >= ?
+        ORDER BY total_score DESC
+        LIMIT 1
+    """, (today, STOCK_OF_DAY_MIN_SCORE))
+
+    pick = cur.fetchone()
+
+    # If no pick today, get the most recent day's best candidate
+    if not pick:
+        cur.execute("""
+            SELECT id, date, ticker, total_score, tier, action,
+                   insider_score, options_score, social_score,
+                   entry_price, stop_price, target_price,
+                   position_size, notes
+            FROM signals
+            WHERE insider_score > 0 AND total_score >= ?
+            ORDER BY date DESC, total_score DESC
+            LIMIT 1
+        """, (STOCK_OF_DAY_MIN_SCORE,))
+        pick = cur.fetchone()
+
+    if pick:
+        pick = dict(pick)
+        ticker = pick['ticker']
+
+        # Get fresh price and calculate Entry/Stop/Target
+        current_price = get_current_price(ticker)
+        if current_price:
+            pick['entry_price'] = round(current_price, 2)
+            pick['stop_price'] = round(current_price * (1 - STOCK_OF_DAY_STOP_PCT), 2)
+            pick['target_price'] = round(current_price * (1 + STOCK_OF_DAY_TARGET_PCT), 2)
+
+        # Determine confidence level
+        if pick['total_score'] >= 45 and pick['insider_score'] >= 15:
+            pick['confidence'] = 'High'
+        else:
+            pick['confidence'] = 'Medium'
+
+        # Generate explanation
+        explanations = []
+        if pick['insider_score'] >= 15:
+            explanations.append("Strong insider buying")
+        elif pick['insider_score'] > 0:
+            explanations.append("Insider buying detected")
+        if pick['options_score'] >= 15:
+            explanations.append("bullish options flow")
+        if pick['social_score'] >= 10:
+            explanations.append("social confirmation")
+
+        pick['explanation'] = " + ".join(explanations) if explanations else pick.get('notes', '')
+        pick['has_pick'] = True
+
+        conn.close()
+        return jsonify(pick)
+
+    # No qualified pick - find best candidate and show what's missing
+    cur.execute("""
+        SELECT id, date, ticker, total_score, tier, action,
+               insider_score, options_score, social_score, notes
+        FROM signals
+        WHERE date = ?
+        ORDER BY total_score DESC
+        LIMIT 1
+    """, (today,))
+
+    best_candidate = cur.fetchone()
+
+    # If no signals today at all, try recent
+    if not best_candidate:
+        cur.execute("""
+            SELECT id, date, ticker, total_score, tier, action,
+                   insider_score, options_score, social_score, notes
+            FROM signals
+            ORDER BY date DESC, total_score DESC
+            LIMIT 1
+        """)
+        best_candidate = cur.fetchone()
+
+    conn.close()
+
+    if best_candidate:
+        best_candidate = dict(best_candidate)
+
+        # Determine what's missing
+        missing = []
+        if best_candidate['insider_score'] == 0:
+            missing.append("needs insider activity")
+        if best_candidate['total_score'] < STOCK_OF_DAY_MIN_SCORE:
+            missing.append(f"score below {STOCK_OF_DAY_MIN_SCORE}")
+        if best_candidate['social_score'] == 0:
+            missing.append("needs social confirmation")
+
+        return jsonify({
+            "has_pick": False,
+            "best_candidate": best_candidate,
+            "missing": " — ".join(missing) if missing else "Below threshold"
+        })
+
+    return jsonify({
+        "has_pick": False,
+        "best_candidate": None,
+        "missing": "No signals detected"
+    })
+
+
 @app.route("/api/signals/today")
 def api_signals_today():
-    """Get today's trading signals."""
+    """Get today's trading signals (for watchlist, excludes Stock of the Day)."""
     conn = get_db()
     cur = conn.cursor()
 
     # Get today's date (or most recent signal date)
     today = date.today().isoformat()
 
+    # Get all signals with some activity (score > 15 to exclude pure noise)
     cur.execute("""
         SELECT id, date, ticker, total_score, tier, action,
                insider_score, options_score, social_score, technical_score,
                entry_price, stop_price, target_price,
                position_size, market_regime, notes
         FROM signals
-        WHERE date = ? AND action IN ('TRADE', 'WATCH')
-        ORDER BY
-            CASE action WHEN 'TRADE' THEN 1 WHEN 'WATCH' THEN 2 END,
-            total_score DESC
+        WHERE date = ? AND total_score > 15
+        ORDER BY total_score DESC
     """, (today,))
 
     signals = [dict(row) for row in cur.fetchall()]
@@ -129,14 +280,14 @@ def api_signals_today():
                    entry_price, stop_price, target_price,
                    position_size, market_regime, notes
             FROM signals
-            WHERE action IN ('TRADE', 'WATCH')
+            WHERE total_score > 15
             ORDER BY date DESC, total_score DESC
             LIMIT 10
         """)
         signals = [dict(row) for row in cur.fetchall()]
 
     conn.close()
-    return jsonify({"signals": signals, "date": today})
+    return jsonify({"signals": signals, "date": today, "threshold": STOCK_OF_DAY_MIN_SCORE})
 
 
 # ============================================================================

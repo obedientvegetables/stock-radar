@@ -1,5 +1,8 @@
 # Stock Radar Dependencies
 
+# Web Framework
+flask>=3.0.0
+
 # Data Collection
 yfinance>=0.2.36
 requests>=2.31.0
