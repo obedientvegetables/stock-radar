@@ -51,8 +51,11 @@ class Config:
 
     # Risk Management
     MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "0.10"))
-    DEFAULT_STOP_PCT = float(os.getenv("DEFAULT_STOP_PCT", "0.05"))
-    DEFAULT_TARGET_PCT = float(os.getenv("DEFAULT_TARGET_PCT", "0.10"))
+    DEFAULT_STOP_PCT = float(os.getenv("DEFAULT_STOP_PCT", "0.10"))
+    DEFAULT_TARGET_PCT = float(os.getenv("DEFAULT_TARGET_PCT", "0.20"))
+
+    # Stock of the Day thresholds
+    STOCK_OF_DAY_MIN_SCORE = int(os.getenv("STOCK_OF_DAY_MIN_SCORE", "25"))
 
     # Paper Trading
     PAPER_PORTFOLIO_SIZE = float(os.getenv("PAPER_PORTFOLIO_SIZE", "10000"))

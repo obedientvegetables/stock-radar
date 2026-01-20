@@ -139,6 +139,132 @@ def api_signals_today():
     return jsonify({"signals": signals, "date": today})
 
 
+@app.route("/api/stock-of-the-day")
+def api_stock_of_the_day():
+    """Get the Stock of the Day - the top pick meeting all criteria."""
+    conn = get_db()
+    cur = conn.cursor()
+
+    today = date.today().isoformat()
+
+    # Get the best candidate that meets Stock of the Day criteria:
+    # 1. Highest composite score
+    # 2. Must have insider buying activity (insider_score > 0)
+    # 3. Score must be >= threshold (default 25)
+    min_score = config.STOCK_OF_DAY_MIN_SCORE
+
+    cur.execute("""
+        SELECT id, date, ticker, total_score, tier, action,
+               insider_score, options_score, social_score, technical_score,
+               entry_price, stop_price, target_price,
+               position_size, market_regime, notes
+        FROM signals
+        WHERE date = ?
+          AND insider_score > 0
+          AND total_score >= ?
+        ORDER BY total_score DESC
+        LIMIT 1
+    """, (today, min_score))
+
+    pick = cur.fetchone()
+
+    # If no qualifying pick today, get from most recent date
+    if not pick:
+        cur.execute("""
+            SELECT id, date, ticker, total_score, tier, action,
+                   insider_score, options_score, social_score, technical_score,
+                   entry_price, stop_price, target_price,
+                   position_size, market_regime, notes
+            FROM signals
+            WHERE insider_score > 0
+              AND total_score >= ?
+            ORDER BY date DESC, total_score DESC
+            LIMIT 1
+        """, (min_score,))
+        pick = cur.fetchone()
+
+    # Also get the best candidate that doesn't meet criteria (for "no pick" display)
+    cur.execute("""
+        SELECT id, date, ticker, total_score, tier, action,
+               insider_score, options_score, social_score, technical_score,
+               entry_price, stop_price, target_price,
+               position_size, market_regime, notes
+        FROM signals
+        WHERE date = ?
+        ORDER BY total_score DESC
+        LIMIT 1
+    """, (today,))
+
+    best_candidate = cur.fetchone()
+
+    result = {
+        "has_pick": False,
+        "pick": None,
+        "best_candidate": None,
+        "min_score_threshold": min_score,
+        "date": today
+    }
+
+    if pick:
+        pick_dict = dict(pick)
+        ticker = pick_dict['ticker']
+
+        # Get fresh current price
+        current_price = get_current_price(ticker)
+        if current_price:
+            # Recalculate entry/stop/target with 10%/20% defaults
+            pick_dict['entry_price'] = round(current_price, 2)
+            pick_dict['stop_price'] = round(current_price * (1 - config.DEFAULT_STOP_PCT), 2)
+            pick_dict['target_price'] = round(current_price * (1 + config.DEFAULT_TARGET_PCT), 2)
+
+        # Determine confidence level
+        score = pick_dict['total_score']
+        if score >= 50:
+            pick_dict['confidence'] = 'High'
+        elif score >= 35:
+            pick_dict['confidence'] = 'Medium'
+        else:
+            pick_dict['confidence'] = 'Low'
+
+        # Generate one-line explanation
+        explanations = []
+        if pick_dict.get('insider_score', 0) >= 15:
+            explanations.append('Strong insider buying')
+        elif pick_dict.get('insider_score', 0) > 0:
+            explanations.append('Insider buying detected')
+
+        if pick_dict.get('options_score', 0) >= 15:
+            explanations.append('bullish options flow')
+        elif pick_dict.get('options_score', 0) > 0:
+            explanations.append('options activity')
+
+        if pick_dict.get('social_score', 0) >= 10:
+            explanations.append('social confirmation')
+
+        pick_dict['explanation'] = ' + '.join(explanations) if explanations else 'Multiple signals aligned'
+
+        result['has_pick'] = True
+        result['pick'] = pick_dict
+
+    if best_candidate and (not pick or best_candidate['ticker'] != pick['ticker']):
+        candidate_dict = dict(best_candidate)
+
+        # Determine what's missing for this candidate
+        missing = []
+        if candidate_dict.get('insider_score', 0) == 0:
+            missing.append('needs insider activity')
+        if candidate_dict.get('total_score', 0) < min_score:
+            missing.append(f'score below {min_score}')
+        if candidate_dict.get('social_score', 0) == 0:
+            missing.append('needs social confirmation')
+
+        candidate_dict['missing'] = ', '.join(missing) if missing else 'Close to threshold'
+        result['best_candidate'] = candidate_dict
+
+    conn.close()
+    return jsonify(result)
+
+
 # ============================================================================
 # API ENDPOINTS - POSITIONS
 # ============================================================================

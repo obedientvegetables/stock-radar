@@ -34,6 +34,9 @@
         .scrollbar-thin::-webkit-scrollbar-track { background: #1a1f2e; }
         .scrollbar-thin::-webkit-scrollbar-thumb { background: #2f3336; border-radius: 3px; }
         .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #3a3f44; }
+        .signal-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+        .signal-dot.active { background: currentColor; }
+        .signal-dot.inactive { background: transparent; border: 1.5px solid currentColor; opacity: 0.4; }
     </style>
 </head>
 <body class="text-gray-100 min-h-screen">
@@ -54,6 +57,10 @@
                         <span class="hidden sm:inline">Last update: </span>
                         <span id="last-update-time">--:--</span>
                     </div>
+                    <div id="next-update" class="text-radar-muted hidden sm:block">
+                        <span>Next: </span>
+                        <span id="next-update-time">8:30 AM</span>
+                    </div>
                     <div id="market-status" class="flex items-center gap-2">
                         <span class="w-2 h-2 rounded-full bg-radar-muted"></span>
                         <span class="text-radar-muted">Market: --</span>
@@ -68,18 +75,15 @@
 
     <main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
 
-        <!-- Section 1: Today's Signals -->
-        <section class="bg-radar-card rounded-xl border border-radar-border p-5">
-            <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
-                <span class="text-xl">&#128202;</span> Today's Signals
-            </h2>
-            <div id="signals-container" class="space-y-3">
-                <div class="text-radar-muted text-center py-8">Loading signals...</div>
+        <!-- Section 1: Stock of the Day (Hero) -->
+        <section id="stock-of-day-section" class="bg-radar-card rounded-xl border border-radar-border overflow-hidden">
+            <div id="stock-of-day-container">
+                <div class="text-radar-muted text-center py-12">Loading...</div>
             </div>
         </section>
 
         <!-- Section 2: Open Positions -->
-        <section class="bg-radar-card rounded-xl border border-radar-border p-5">
+        <section id="positions-section" class="bg-radar-card rounded-xl border border-radar-border p-5">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
                 <h2 class="text-lg font-semibold flex items-center gap-2">
                     <span class="text-xl">&#128200;</span> Open Positions
@@ -94,8 +98,42 @@
             </div>
         </section>
 
-        <!-- Section 3: Performance Summary -->
+        <!-- Section 3: Watchlist / Other Candidates -->
         <section class="bg-radar-card rounded-xl border border-radar-border p-5">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <h2 class="text-lg font-semibold flex items-center gap-2">
+                    <span class="text-xl">&#128202;</span> Watchlist
+                </h2>
+                <span class="text-xs text-radar-muted">Score 25+ becomes Stock of the Day</span>
+            </div>
+            <div id="watchlist-container" class="space-y-2">
+                <div class="text-radar-muted text-center py-8">Loading...</div>
+            </div>
+        </section>
+
+        <!-- Section 4: Recent Activity -->
+        <section class="bg-radar-card rounded-xl border border-radar-border p-5">
+            <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
+                <span class="text-xl">&#128337;</span> Recent Activity
+            </h2>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div>
+                    <h3 class="text-sm font-medium text-radar-muted mb-3">Recent Insider Buys Detected</h3>
+                    <div id="recent-insider-container" class="space-y-2 max-h-48 overflow-y-auto scrollbar-thin">
+                        <div class="text-radar-muted text-center py-4">Loading...</div>
+                    </div>
+                </div>
+                <div id="recent-trades-section">
+                    <h3 class="text-sm font-medium text-radar-muted mb-3">Recent Closed Trades</h3>
+                    <div id="recent-trades-container" class="space-y-2 max-h-48 overflow-y-auto scrollbar-thin">
+                        <div class="text-radar-muted text-center py-4">Loading...</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Section 5: Performance Summary (hidden until 5+ trades) -->
+        <section id="performance-section" class="bg-radar-card rounded-xl border border-radar-border p-5 hidden">
             <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
                 <span class="text-xl">&#128202;</span> Performance Summary
             </h2>
@@ -133,69 +171,55 @@
             </div>
         </section>
 
-        <!-- Section 4: Recent Activity -->
-        <section class="bg-radar-card rounded-xl border border-radar-border p-5">
-            <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
-                <span class="text-xl">&#128337;</span> Recent Activity
-            </h2>
-            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div>
-                    <h3 class="text-sm font-medium text-radar-muted mb-3">Recent Closed Trades</h3>
-                    <div id="recent-trades-container" class="space-y-2 max-h-64 overflow-y-auto scrollbar-thin">
-                        <div class="text-radar-muted text-center py-4">Loading...</div>
-                    </div>
-                </div>
-                <div>
-                    <h3 class="text-sm font-medium text-radar-muted mb-3">Recent Insider Buys Detected</h3>
-                    <div id="recent-insider-container" class="space-y-2 max-h-64 overflow-y-auto scrollbar-thin">
-                        <div class="text-radar-muted text-center py-4">Loading...</div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- Section 5: Quick Actions -->
+        <!-- Section 6: Quick Actions (at bottom) -->
         <section class="bg-radar-card rounded-xl border border-radar-border p-5">
             <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
                 <span class="text-xl">&#9889;</span> Quick Actions
             </h2>
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <!-- Enter Trade Form -->
-                <div class="bg-radar-bg rounded-lg p-4 border border-radar-border">
-                    <h3 class="text-sm font-medium mb-3">Enter New Trade</h3>
-                    <form id="enter-trade-form" class="space-y-3">
-                        <div class="grid grid-cols-2 gap-3">
-                            <div>
-                                <label class="text-xs text-radar-muted">Ticker</label>
-                                <input type="text" id="enter-ticker" placeholder="AAPL"
-                                    class="w-full mt-1 px-3 py-2 bg-radar-card border border-radar-border rounded text-sm focus:outline-none focus:border-radar-accent uppercase">
+                <!-- Enter Trade Form (initially collapsed) -->
+                <div class="bg-radar-bg rounded-lg border border-radar-border">
+                    <button id="enter-trade-toggle" onclick="toggleEnterForm()" class="w-full p-4 text-left flex items-center justify-between hover:bg-radar-border/30 transition rounded-lg">
+                        <span class="text-sm font-medium">Enter New Trade</span>
+                        <svg id="enter-trade-chevron" class="w-5 h-5 text-radar-muted transform transition" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                        </svg>
+                    </button>
+                    <div id="enter-trade-form-container" class="hidden px-4 pb-4">
+                        <form id="enter-trade-form" class="space-y-3">
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="text-xs text-radar-muted">Ticker</label>
+                                    <input type="text" id="enter-ticker" placeholder="Enter ticker..."
+                                        class="w-full mt-1 px-3 py-2 bg-radar-card border border-radar-border rounded text-sm focus:outline-none focus:border-radar-accent uppercase">
+                                </div>
+                                <div>
+                                    <label class="text-xs text-radar-muted">Price</label>
+                                    <input type="number" id="enter-price" step="0.01" placeholder="Current price"
+                                        class="w-full mt-1 px-3 py-2 bg-radar-card border border-radar-border rounded text-sm focus:outline-none focus:border-radar-accent">
+                                </div>
                             </div>
-                            <div>
-                                <label class="text-xs text-radar-muted">Price</label>
-                                <input type="number" id="enter-price" step="0.01" placeholder="150.00"
-                                    class="w-full mt-1 px-3 py-2 bg-radar-card border border-radar-border rounded text-sm focus:outline-none focus:border-radar-accent">
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="text-xs text-radar-muted">Position Size</label>
+                                    <select id="enter-size" class="w-full mt-1 px-3 py-2 bg-radar-card border border-radar-border rounded text-sm focus:outline-none focus:border-radar-accent">
+                                        <option value="FULL">Full Position</option>
+                                        <option value="HALF">Half Position</option>
+                                        <option value="QUARTER" selected>Quarter Position</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="text-xs text-radar-muted">Signal ID (optional)</label>
+                                    <input type="number" id="enter-signal-id" placeholder="Auto"
+                                        class="w-full mt-1 px-3 py-2 bg-radar-card border border-radar-border rounded text-sm focus:outline-none focus:border-radar-accent">
+                                </div>
                             </div>
-                        </div>
-                        <div class="grid grid-cols-2 gap-3">
-                            <div>
-                                <label class="text-xs text-radar-muted">Position Size</label>
-                                <select id="enter-size" class="w-full mt-1 px-3 py-2 bg-radar-card border border-radar-border rounded text-sm focus:outline-none focus:border-radar-accent">
-                                    <option value="FULL">Full Position</option>
-                                    <option value="HALF">Half Position</option>
-                                    <option value="QUARTER">Quarter Position</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label class="text-xs text-radar-muted">Signal ID (optional)</label>
-                                <input type="number" id="enter-signal-id" placeholder="Auto"
-                                    class="w-full mt-1 px-3 py-2 bg-radar-card border border-radar-border rounded text-sm focus:outline-none focus:border-radar-accent">
-                            </div>
-                        </div>
-                        <button type="submit" class="w-full py-2 bg-radar-green text-radar-bg rounded font-medium text-sm hover:opacity-90 transition">
-                            Enter Trade
-                        </button>
-                    </form>
-                    <div id="enter-trade-status" class="mt-2 text-sm hidden"></div>
+                            <button type="submit" class="w-full py-2 bg-radar-green text-radar-bg rounded font-medium text-sm hover:opacity-90 transition">
+                                Enter Trade
+                            </button>
+                        </form>
+                        <div id="enter-trade-status" class="mt-2 text-sm hidden"></div>
+                    </div>
                 </div>
 
                 <!-- Exit Trade Form -->
@@ -255,6 +279,42 @@
 
         let equityChart = null;
         let positionsData = [];
+        let stockOfDaySignalId = null;
+
+        // Toggle enter trade form
+        function toggleEnterForm() {
+            const container = document.getElementById('enter-trade-form-container');
+            const chevron = document.getElementById('enter-trade-chevron');
+            container.classList.toggle('hidden');
+            chevron.classList.toggle('rotate-180');
+        }
+
+        // Show enter trade form with pre-filled data
+        function showEnterFormWithData(ticker, price, signalId) {
+            const container = document.getElementById('enter-trade-form-container');
+            const chevron = document.getElementById('enter-trade-chevron');
+
+            container.classList.remove('hidden');
+            chevron.classList.add('rotate-180');
+
+            document.getElementById('enter-ticker').value = ticker;
+            document.getElementById('enter-price').value = price;
+            document.getElementById('enter-signal-id').value = signalId || '';
+
+            // Scroll to form
+            document.getElementById('enter-trade-toggle').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+
+        // Signal indicator dots helper
+        function signalDots(insider, options, social) {
+            return `
+                <div class="flex items-center gap-1.5" title="Insider: ${insider || 0} | Options: ${options || 0} | Social: ${social || 0}">
+                    <span class="signal-dot ${insider > 0 ? 'active' : 'inactive'}" style="color: #00d4aa;" title="Insider"></span>
+                    <span class="signal-dot ${options > 0 ? 'active' : 'inactive'}" style="color: #1d9bf0;" title="Options"></span>
+                    <span class="signal-dot ${social > 0 ? 'active' : 'inactive'}" style="color: #ffd700;" title="Social"></span>
+                </div>
+            `;
+        }
 
         // Load health status
         async function loadHealth() {
@@ -280,72 +340,155 @@
                     <span class="w-2 h-2 rounded-full ${dotClass}"></span>
                     <span class="${data.market_open ? 'text-radar-green' : 'text-radar-muted'}">Market: ${statusText}</span>
                 `;
+
+                // Show next update time
+                document.getElementById('next-update').classList.remove('hidden');
             } catch (e) {
                 console.error('Error loading health:', e);
             }
         }
 
-        // Load today's signals
-        async function loadSignals() {
+        // Load Stock of the Day
+        async function loadStockOfDay() {
+            try {
+                const res = await fetch('/api/stock-of-the-day');
+                const data = await res.json();
+                const container = document.getElementById('stock-of-day-container');
+
+                if (data.has_pick && data.pick) {
+                    const p = data.pick;
+                    stockOfDaySignalId = p.id;
+
+                    const confidenceColors = {
+                        'High': 'bg-radar-green text-radar-bg',
+                        'Medium': 'bg-radar-yellow text-radar-bg',
+                        'Low': 'bg-radar-muted text-white'
+                    };
+                    const confidenceClass = confidenceColors[p.confidence] || confidenceColors['Medium'];
+
+                    container.innerHTML = `
+                        <div class="border-l-4 border-radar-green bg-gradient-to-r from-green-900/30 to-transparent">
+                            <div class="p-6">
+                                <div class="flex flex-wrap items-start justify-between gap-4 mb-4">
+                                    <div>
+                                        <div class="text-xs text-radar-muted uppercase tracking-wider mb-1">Stock of the Day</div>
+                                        <div class="flex items-center gap-3">
+                                            <span class="text-4xl font-bold text-radar-blue">${p.ticker}</span>
+                                            <span class="px-2 py-1 text-xs font-bold rounded ${confidenceClass}">${p.confidence} Confidence</span>
+                                        </div>
+                                        <div class="text-radar-muted mt-1">${p.explanation}</div>
+                                    </div>
+                                    <div class="text-sm text-radar-muted">
+                                        Score: <span class="text-white font-bold text-lg">${p.total_score}</span>
+                                    </div>
+                                </div>
+
+                                <div class="grid grid-cols-3 gap-4 mb-6">
+                                    <div class="bg-radar-bg/50 rounded-lg p-3 text-center">
+                                        <div class="text-xs text-radar-muted mb-1">Entry Price</div>
+                                        <div class="text-xl font-bold">${fmt.money(p.entry_price)}</div>
+                                    </div>
+                                    <div class="bg-radar-bg/50 rounded-lg p-3 text-center">
+                                        <div class="text-xs text-radar-muted mb-1">Stop Loss (-10%)</div>
+                                        <div class="text-xl font-bold text-radar-red">${fmt.money(p.stop_price)}</div>
+                                    </div>
+                                    <div class="bg-radar-bg/50 rounded-lg p-3 text-center">
+                                        <div class="text-xs text-radar-muted mb-1">Target (+20%)</div>
+                                        <div class="text-xl font-bold text-radar-green">${fmt.money(p.target_price)}</div>
+                                    </div>
+                                </div>
+
+                                <div class="flex flex-wrap items-center gap-4">
+                                    <button onclick="showEnterFormWithData('${p.ticker}', ${p.entry_price}, ${p.id})"
+                                            class="px-6 py-3 bg-radar-green text-radar-bg rounded-lg font-bold text-sm hover:opacity-90 transition flex items-center gap-2">
+                                        <span>&#9654;</span> Enter Trade
+                                    </button>
+                                    <div class="flex items-center gap-3 text-sm text-radar-muted">
+                                        ${signalDots(p.insider_score, p.options_score, p.social_score)}
+                                        <span class="hidden sm:inline">Insider: ${p.insider_score || 0} | Options: ${p.options_score || 0} | Social: ${p.social_score || 0}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    // No pick today
+                    stockOfDaySignalId = null;
+                    let candidateHtml = '';
+
+                    if (data.best_candidate) {
+                        const c = data.best_candidate;
+                        candidateHtml = `
+                            <div class="mt-4 p-4 bg-radar-bg/50 rounded-lg">
+                                <div class="flex items-center justify-between">
+                                    <div class="flex items-center gap-3">
+                                        <span class="text-radar-blue font-bold">${c.ticker}</span>
+                                        <span class="text-radar-muted text-sm">Score: ${c.total_score}</span>
+                                        ${signalDots(c.insider_score, c.options_score, c.social_score)}
+                                    </div>
+                                    <span class="text-xs text-radar-yellow">${c.missing || 'Not ready'}</span>
+                                </div>
+                            </div>
+                        `;
+                    }
+
+                    container.innerHTML = `
+                        <div class="border-l-4 border-radar-muted bg-gradient-to-r from-gray-800/30 to-transparent p-6">
+                            <div class="text-xs text-radar-muted uppercase tracking-wider mb-1">Stock of the Day</div>
+                            <div class="text-2xl font-bold text-radar-muted mb-2">No high-confidence picks today</div>
+                            <div class="text-sm text-radar-muted">Waiting for signals to align. Best to sit tight.</div>
+                            ${candidateHtml}
+                        </div>
+                    `;
+                }
+            } catch (e) {
+                console.error('Error loading stock of the day:', e);
+                document.getElementById('stock-of-day-container').innerHTML = '<div class="text-radar-red text-center py-8">Error loading data</div>';
+            }
+        }
+
+        // Load watchlist (other signals)
+        async function loadWatchlist() {
             try {
                 const res = await fetch('/api/signals/today');
                 const data = await res.json();
-                const container = document.getElementById('signals-container');
+                const container = document.getElementById('watchlist-container');
 
-                if (!data.signals || data.signals.length === 0) {
+                // Filter: only show signals with score >= 15 (some activity)
+                // Exclude the Stock of the Day if it exists
+                const signals = (data.signals || []).filter(s =>
+                    s.total_score >= 15 && s.id !== stockOfDaySignalId
+                );
+
+                if (signals.length === 0) {
                     container.innerHTML = `
-                        <div class="text-center py-8">
-                            <div class="text-radar-muted text-4xl mb-2">&#128064;</div>
-                            <div class="text-radar-muted">No signals today</div>
-                            <div class="text-xs text-radar-muted mt-1">Check back after market hours</div>
+                        <div class="text-center py-6">
+                            <div class="text-radar-muted">No other candidates today</div>
                         </div>
                     `;
                     return;
                 }
 
-                container.innerHTML = data.signals.map(s => {
-                    const isTrade = s.action === 'TRADE';
-                    const borderColor = isTrade ? 'border-radar-green' : 'border-radar-yellow';
-                    const bgColor = isTrade ? 'bg-green-900/20' : 'bg-yellow-900/20';
-                    const badge = isTrade
-                        ? '<span class="px-2 py-0.5 bg-radar-green text-radar-bg text-xs font-bold rounded">TRADE</span>'
-                        : '<span class="px-2 py-0.5 bg-radar-yellow text-radar-bg text-xs font-bold rounded">WATCH</span>';
-
-                    return `
-                        <div class="border ${borderColor} ${bgColor} rounded-lg p-4">
-                            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
-                                <div class="flex items-center gap-3">
-                                    ${badge}
-                                    <span class="text-radar-blue font-bold text-lg">${s.ticker}</span>
-                                    <span class="text-radar-muted text-sm">Score: <span class="text-white font-medium">${s.total_score}</span></span>
-                                </div>
-                                <div class="text-sm">
-                                    <span class="text-radar-muted">Entry:</span> <span class="font-medium">${fmt.money(s.entry_price)}</span>
-                                    <span class="text-radar-muted ml-3">Stop:</span> <span class="text-radar-red">${fmt.money(s.stop_price)}</span>
-                                    <span class="text-radar-muted ml-3">Target:</span> <span class="text-radar-green">${fmt.money(s.target_price)}</span>
-                                </div>
-                            </div>
-                            <div class="flex flex-wrap gap-4 text-sm">
-                                <div class="flex items-center gap-2">
-                                    <span class="text-radar-muted">Insider:</span>
-                                    <span class="font-medium">${s.insider_score || 0}</span>
-                                </div>
-                                <div class="flex items-center gap-2">
-                                    <span class="text-radar-muted">Options:</span>
-                                    <span class="font-medium">${s.options_score || 0}</span>
-                                </div>
-                                <div class="flex items-center gap-2">
-                                    <span class="text-radar-muted">Social:</span>
-                                    <span class="font-medium">${s.social_score || 0}</span>
-                                </div>
-                                ${s.notes ? `<div class="text-radar-muted text-xs italic">${s.notes}</div>` : ''}
-                            </div>
+                container.innerHTML = signals.map(s => `
+                    <div class="flex items-center justify-between p-3 bg-radar-bg rounded-lg border border-radar-border/50 hover:border-radar-border transition">
+                        <div class="flex items-center gap-4">
+                            <span class="text-radar-blue font-bold w-16">${s.ticker}</span>
+                            ${signalDots(s.insider_score, s.options_score, s.social_score)}
+                            <span class="text-sm text-radar-muted">
+                                <span class="font-medium text-white">${s.total_score}</span> pts
+                            </span>
                         </div>
-                    `;
-                }).join('');
+                        <div class="flex items-center gap-4 text-sm">
+                            <span class="text-radar-muted hidden sm:inline">
+                                ${fmt.money(s.entry_price)}
+                            </span>
+                            ${s.notes ? `<span class="text-xs text-radar-muted italic max-w-48 truncate">${s.notes}</span>` : ''}
+                        </div>
+                    </div>
+                `).join('');
             } catch (e) {
-                console.error('Error loading signals:', e);
-                document.getElementById('signals-container').innerHTML = '<div class="text-radar-red text-center py-4">Error loading signals</div>';
+                console.error('Error loading watchlist:', e);
+                document.getElementById('watchlist-container').innerHTML = '<div class="text-radar-red text-center py-4">Error loading signals</div>';
             }
         }
 
@@ -355,6 +498,7 @@
                 const res = await fetch('/api/positions');
                 const data = await res.json();
                 const container = document.getElementById('positions-container');
+                const section = document.getElementById('positions-section');
 
                 positionsData = data.positions || [];
 
@@ -371,7 +515,7 @@
 
                 if (positionsData.length === 0) {
                     container.innerHTML = `
-                        <div class="text-center py-8">
+                        <div class="text-center py-6">
                             <div class="text-radar-muted">No open positions</div>
                         </div>
                     `;
@@ -428,13 +572,24 @@
             }
         }
 
-        // Load performance summary
+        // Load performance summary (only show if 5+ trades)
         async function loadPerformance() {
             try {
                 const res = await fetch('/api/performance');
                 const data = await res.json();
 
-                document.getElementById('stat-total-trades').textContent = data.total_trades || 0;
+                const section = document.getElementById('performance-section');
+                const totalTrades = data.total_trades || 0;
+
+                // Only show if 5+ closed trades
+                if (totalTrades < 5) {
+                    section.classList.add('hidden');
+                    return;
+                }
+
+                section.classList.remove('hidden');
+
+                document.getElementById('stat-total-trades').textContent = totalTrades;
                 document.getElementById('stat-win-rate').textContent = data.win_rate != null ? data.win_rate.toFixed(1) + '%' : '--';
                 document.getElementById('stat-avg-win').textContent = data.avg_win != null ? fmt.pct(data.avg_win) : '--';
                 document.getElementById('stat-avg-loss').textContent = data.avg_loss != null ? fmt.pct(data.avg_loss) : '--';
@@ -453,11 +608,13 @@
                         </div>
                     `).join('');
                 } else {
-                    scoreContainer.innerHTML = '<div class="text-radar-muted text-center py-4 text-sm">No closed trades yet</div>';
+                    scoreContainer.innerHTML = '<div class="text-radar-muted text-center py-4 text-sm">No data</div>';
                 }
 
                 // Equity chart
-                renderEquityChart(data.equity_curve || [], data.spy_curve || []);
+                if (data.equity_curve && data.equity_curve.length > 0) {
+                    renderEquityChart(data.equity_curve, data.spy_curve || []);
+                }
             } catch (e) {
                 console.error('Error loading performance:', e);
             }
@@ -535,18 +692,20 @@
             });
         }
 
-        // Load recent trades
+        // Load recent trades (only show section if there's data)
         async function loadRecentTrades() {
             try {
                 const res = await fetch('/api/trades/recent');
                 const data = await res.json();
                 const container = document.getElementById('recent-trades-container');
+                const section = document.getElementById('recent-trades-section');
 
                 if (!data.trades || data.trades.length === 0) {
-                    container.innerHTML = '<div class="text-radar-muted text-center py-4 text-sm">No closed trades yet</div>';
+                    section.classList.add('hidden');
                     return;
                 }
 
+                section.classList.remove('hidden');
                 container.innerHTML = data.trades.map(t => `
                     <div class="flex items-center justify-between p-2 bg-radar-bg rounded border border-radar-border/50">
                         <div>
@@ -578,13 +737,12 @@
 
                 container.innerHTML = data.insider_buys.map(i => `
                     <div class="flex items-center justify-between p-2 bg-radar-bg rounded border border-radar-border/50">
-                        <div>
+                        <div class="flex items-center gap-2">
                             <span class="text-radar-blue font-medium">${i.ticker}</span>
-                            <span class="text-radar-muted text-xs ml-2">${i.insider_name || 'Insider'}</span>
+                            <span class="text-radar-muted text-xs truncate max-w-24">${i.insider_title || i.insider_name || 'Insider'}</span>
                         </div>
                         <div class="text-right">
                             <span class="text-radar-green font-medium">${fmt.moneyInt(i.total_value)}</span>
-                            <span class="text-radar-muted text-xs ml-2">${fmt.date(i.trade_date)}</span>
                         </div>
                     </div>
                 `).join('');
@@ -674,10 +832,11 @@
         });
 
         // Refresh all data
-        function refreshAll() {
-            loadHealth();
-            loadSignals();
+        async function refreshAll() {
+            await loadHealth();
+            await loadStockOfDay();
             loadPositions();
+            loadWatchlist();
             loadPerformance();
             loadRecentTrades();
             loadRecentInsider();
