@@ -62,6 +62,23 @@ def validation():
 # API ENDPOINTS - HEALTH & STATUS
 # ============================================================================
 
+def get_next_update_time():
+    """Calculate the next scheduled update time (8:30 AM ET on next trading day)."""
+    now = datetime.now()
+    today_830 = now.replace(hour=8, minute=30, second=0, microsecond=0)
+
+    # If before 8:30 AM today and it's a weekday, next update is today
+    if now < today_830 and now.weekday() < 5:
+        return today_830
+
+    # Otherwise, find next weekday
+    next_day = now + timedelta(days=1)
+    while next_day.weekday() >= 5:  # Skip weekends
+        next_day += timedelta(days=1)
+
+    return next_day.replace(hour=8, minute=30, second=0, microsecond=0)
+
+
 @app.route("/api/health")
 def api_health():
     """Get system health status."""
@@ -84,11 +101,16 @@ def api_health():
 
     conn.close()
 
+    # Calculate next update time
+    next_update = get_next_update_time()
+
     return jsonify({
         "status": "healthy" if not errors else "warning",
         "last_collection": last_insider,
         "last_signal_date": last_signal,
         "market_open": is_market_open(),
+        "next_update": next_update.strftime("%I:%M %p"),
+        "next_update_iso": next_update.isoformat(),
         "errors": errors,
         "timestamp": datetime.now().isoformat()
     })
@@ -98,9 +120,154 @@ def api_health():
 # API ENDPOINTS - SIGNALS
 # ============================================================================
 
+@app.route("/api/stock-of-day")
+def api_stock_of_day():
+    """Get the Stock of the Day - the single best trading opportunity."""
+    conn = get_db()
+    cur = conn.cursor()
+
+    today = date.today().isoformat()
+
+    # First try today's signals, then fall back to most recent
+    cur.execute("""
+        SELECT id, date, ticker, total_score, tier, action,
+               insider_score, options_score, social_score, technical_score,
+               entry_price, stop_price, target_price,
+               position_size, market_regime, notes,
+               insider_details, options_details, social_details
+        FROM signals
+        WHERE date = ? AND action IN ('TRADE', 'WATCH')
+        ORDER BY total_score DESC
+    """, (today,))
+
+    signals = [dict(row) for row in cur.fetchall()]
+
+    # If no signals today, get most recent date's signals
+    if not signals:
+        cur.execute("""
+            SELECT DISTINCT date FROM signals
+            WHERE action IN ('TRADE', 'WATCH')
+            ORDER BY date DESC LIMIT 1
+        """)
+        recent_date = cur.fetchone()
+        if recent_date:
+            cur.execute("""
+                SELECT id, date, ticker, total_score, tier, action,
+                       insider_score, options_score, social_score, technical_score,
+                       entry_price, stop_price, target_price,
+                       position_size, market_regime, notes,
+                       insider_details, options_details, social_details
+                FROM signals
+                WHERE date = ? AND action IN ('TRADE', 'WATCH')
+                ORDER BY total_score DESC
+            """, (recent_date[0],))
+            signals = [dict(row) for row in cur.fetchall()]
+
+    conn.close()
+
+    # Selection logic: Find Stock of the Day
+    # 1. Must have insider activity (insider_score > 0)
+    # 2. Must meet minimum score threshold
+    # 3. Highest total_score wins
+
+    stock_of_day = None
+    best_candidate = None
+    missing_criteria = []
+
+    min_score = config.STOCK_OF_DAY_MIN_SCORE
+
+    for s in signals:
+        has_insider = (s.get('insider_score') or 0) > 0
+        meets_threshold = (s.get('total_score') or 0) >= min_score
+
+        # Track best candidate regardless of criteria
+        if best_candidate is None or s['total_score'] > best_candidate['total_score']:
+            best_candidate = s
+            missing_criteria = []
+            if not has_insider:
+                missing_criteria.append("needs insider activity")
+            if not meets_threshold:
+                missing_criteria.append(f"score below {min_score}")
+
+        # Check if this qualifies as Stock of the Day
+        if has_insider and meets_threshold:
+            if stock_of_day is None or s['total_score'] > stock_of_day['total_score']:
+                stock_of_day = s
+
+    # Build response
+    result = {
+        "date": today,
+        "min_score_threshold": min_score,
+        "has_pick": stock_of_day is not None
+    }
+
+    if stock_of_day:
+        # Get fresh current price
+        current_price = get_current_price(stock_of_day['ticker'])
+        if current_price:
+            entry_price = current_price
+        else:
+            entry_price = stock_of_day.get('entry_price') or 0
+
+        # Calculate stop and target (10% stop, 20% target)
+        stop_price = round(entry_price * (1 - config.DEFAULT_STOP_PCT), 2)
+        target_price = round(entry_price * (1 + config.DEFAULT_TARGET_PCT), 2)
+
+        # Determine confidence level
+        total = stock_of_day.get('total_score') or 0
+        if total >= 45:
+            confidence = "High"
+        else:
+            confidence = "Medium"
+
+        # Generate explanation
+        explanation_parts = []
+        if (stock_of_day.get('insider_score') or 0) >= 12:
+            explanation_parts.append("CEO/CFO purchase")
+        elif (stock_of_day.get('insider_score') or 0) >= 6:
+            explanation_parts.append("C-Suite buying")
+        elif (stock_of_day.get('insider_score') or 0) > 0:
+            explanation_parts.append("Insider buying")
+
+        if (stock_of_day.get('options_score') or 0) >= 12:
+            explanation_parts.append("strong options flow")
+        elif (stock_of_day.get('options_score') or 0) >= 8:
+            explanation_parts.append("bullish options activity")
+
+        if (stock_of_day.get('social_score') or 0) >= 10:
+            explanation_parts.append("social momentum")
+
+        explanation = " + ".join(explanation_parts) if explanation_parts else "Multiple signals aligned"
+
+        result["pick"] = {
+            "id": stock_of_day['id'],
+            "ticker": stock_of_day['ticker'],
+            "total_score": stock_of_day['total_score'],
+            "insider_score": stock_of_day.get('insider_score') or 0,
+            "options_score": stock_of_day.get('options_score') or 0,
+            "social_score": stock_of_day.get('social_score') or 0,
+            "entry_price": entry_price,
+            "stop_price": stop_price,
+            "target_price": target_price,
+            "confidence": confidence,
+            "explanation": explanation,
+            "position_size": stock_of_day.get('position_size') or 'QUARTER'
+        }
+    else:
+        # No qualified pick - show best candidate
+        if best_candidate:
+            result["best_candidate"] = {
+                "ticker": best_candidate['ticker'],
+                "total_score": best_candidate['total_score'],
+                "missing": missing_criteria[0] if missing_criteria else "below threshold"
+            }
+
+    return jsonify(result)
+
+
 @app.route("/api/signals/today")
 def api_signals_today():
-    """Get today's trading signals."""
+    """Get today's trading signals (legacy endpoint, still used by watchlist)."""
     conn = get_db()
     cur = conn.cursor()
 
@@ -137,6 +304,86 @@ def api_signals_today():
 
     conn.close()
     return jsonify({"signals": signals, "date": today})
+
+
+@app.route("/api/watchlist")
+def api_watchlist():
+    """Get watchlist candidates - signals with meaningful activity, excluding Stock of Day."""
+    conn = get_db()
+    cur = conn.cursor()
+
+    today = date.today().isoformat()
+
+    # Get signals from today or most recent date
+    cur.execute("""
+        SELECT id, date, ticker, total_score, tier, action,
+               insider_score, options_score, social_score, technical_score,
+               entry_price, stop_price, target_price,
+               position_size, market_regime, notes
+        FROM signals
+        WHERE date = ? AND action IN ('TRADE', 'WATCH')
+        ORDER BY total_score DESC
+    """, (today,))
+
+    signals = [dict(row) for row in cur.fetchall()]
+
+    # If no signals today, get most recent
+    if not signals:
+        cur.execute("""
+            SELECT DISTINCT date FROM signals
+            WHERE action IN ('TRADE', 'WATCH')
+            ORDER BY date DESC LIMIT 1
+        """)
+        recent_date = cur.fetchone()
+        if recent_date:
+            cur.execute("""
+                SELECT id, date, ticker, total_score, tier, action,
+                       insider_score, options_score, social_score, technical_score,
+                       entry_price, stop_price, target_price,
+                       position_size, market_regime, notes
+                FROM signals
+                WHERE date = ? AND action IN ('TRADE', 'WATCH')
+                ORDER BY total_score DESC
+            """, (recent_date[0],))
+            signals = [dict(row) for row in cur.fetchall()]
+
+    conn.close()
+
+    # Determine Stock of Day ticker (to exclude from watchlist)
+    stock_of_day_ticker = None
+    min_score = config.STOCK_OF_DAY_MIN_SCORE
+
+    for s in signals:
+        has_insider = (s.get('insider_score') or 0) > 0
+        meets_threshold = (s.get('total_score') or 0) >= min_score
+        if has_insider and meets_threshold:
+            stock_of_day_ticker = s['ticker']
+            break
+
+    # Filter watchlist:
+    # - Exclude the Stock of Day
+    # - Exclude low-score options-only signals (score <= 15 with only options)
+    watchlist = []
+    for s in signals:
+        if s['ticker'] == stock_of_day_ticker:
+            continue
+
+        insider = s.get('insider_score') or 0
+        options = s.get('options_score') or 0
+        social = s.get('social_score') or 0
+        total = s.get('total_score') or 0
+
+        # Skip if only options activity and low score
+        if insider == 0 and social == 0 and total <= 15:
+            continue
+
+        watchlist.append(s)
+
+    return jsonify({
+        "watchlist": watchlist,
+        "date": today,
+        "stock_of_day_threshold": min_score
+    })
 
 
 # ============================================================================
