@@ -139,6 +139,129 @@ def api_signals_today():
     return jsonify({"signals": signals, "date": today})
 
 
+@app.route("/api/stock-of-day")
+def api_stock_of_day():
+    """Get the Stock of the Day - highest confidence pick."""
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Get today's date (or most recent signal date)
+    today = date.today().isoformat()
+
+    # Find the best candidate: highest score where insider_score > 0 AND total_score >= threshold
+    cur.execute("""
+        SELECT id, date, ticker, total_score, tier, action,
+               insider_score, options_score, social_score, technical_score,
+               entry_price, stop_price, target_price,
+               position_size, market_regime, notes
+        FROM signals
+        WHERE date = ? AND insider_score > 0 AND total_score >= ?
+        ORDER BY total_score DESC
+        LIMIT 1
+    """, (today, config.STOCK_OF_DAY_MIN_SCORE))
+
+    pick = cur.fetchone()
+
+    # If no pick today, check most recent date
+    if not pick:
+        cur.execute("""
+            SELECT id, date, ticker, total_score, tier, action,
+                   insider_score, options_score, social_score, technical_score,
+                   entry_price, stop_price, target_price,
+                   position_size, market_regime, notes
+            FROM signals
+            WHERE insider_score > 0 AND total_score >= ?
+            ORDER BY date DESC, total_score DESC
+            LIMIT 1
+        """, (config.STOCK_OF_DAY_MIN_SCORE,))
+        pick = cur.fetchone()
+
+    if not pick:
+        # No qualifying pick - find best candidate to show what's missing
+        cur.execute("""
+            SELECT ticker, total_score, insider_score, options_score, social_score
+            FROM signals
+            WHERE date = ?
+            ORDER BY total_score DESC
+            LIMIT 1
+        """, (today,))
+        best_candidate = cur.fetchone()
+        conn.close()
+
+        if best_candidate:
+            missing = []
+            if not best_candidate['insider_score'] or best_candidate['insider_score'] == 0:
+                missing.append("Insider activity")
+            if not best_candidate['social_score'] or best_candidate['social_score'] == 0:
+                missing.append("Social confirmation")
+            if best_candidate['total_score'] < config.STOCK_OF_DAY_MIN_SCORE:
+                missing.append(f"Score below {config.STOCK_OF_DAY_MIN_SCORE}")
+
+            return jsonify({
+                "has_pick": False,
+                "best_candidate": {
+                    "ticker": best_candidate['ticker'],
+                    "score": best_candidate['total_score']
+                },
+                "missing": ", ".join(missing) if missing else "Unknown"
+            })
+        else:
+            return jsonify({"has_pick": False, "best_candidate": None, "missing": "No signals today"})
+
+    # We have a pick - get current price
+    pick_dict = dict(pick)
+    ticker = pick_dict['ticker']
+
+    current_price = get_current_price(ticker)
+    if current_price is None:
+        current_price = pick_dict['entry_price'] or 0
+
+    # Calculate entry, stop, target based on current price
+    entry = round(current_price, 2)
+    stop = round(entry * (1 - config.DEFAULT_STOP_PCT), 2)
+    target = round(entry * (1 + config.DEFAULT_TARGET_PCT), 2)
+
+    # Determine confidence level
+    score = pick_dict['total_score']
+    if score >= 50:
+        confidence = "VERY HIGH"
+    elif score >= 40:
+        confidence = "HIGH"
+    elif score >= 30:
+        confidence = "MODERATE"
+    else:
+        confidence = "LOW"
+
+    # Build summary from available signals
+    summary_parts = []
+    if pick_dict['insider_score'] and pick_dict['insider_score'] > 15:
+        summary_parts.append("Insider buying")
+    if pick_dict['options_score'] and pick_dict['options_score'] > 10:
+        summary_parts.append("bullish options flow")
+    if pick_dict['social_score'] and pick_dict['social_score'] > 5:
+        summary_parts.append("social momentum")
+
+    summary = " + ".join(summary_parts) if summary_parts else pick_dict.get('notes', '')
+
+    conn.close()
+
+    return jsonify({
+        "has_pick": True,
+        "ticker": ticker,
+        "entry": entry,
+        "stop": stop,
+        "target": target,
+        "score": score,
+        "confidence": confidence,
+        "summary": summary,
+        "insider_score": pick_dict['insider_score'],
+        "options_score": pick_dict['options_score'],
+        "social_score": pick_dict['social_score'],
+        "signal_id": pick_dict['id'],
+        "date": pick_dict['date']
+    })
+
+
 # ============================================================================
 # API ENDPOINTS - POSITIONS
 # ============================================================================
