@@ -141,14 +141,50 @@ def api_signals_today():
 
 @app.route("/api/stock-of-day")
 def api_stock_of_day():
-    """Get the Stock of the Day - highest confidence pick."""
+    """Get the Stock of the Day - highest confidence pick with quality gates."""
     conn = get_db()
     cur = conn.cursor()
 
-    # Get today's date (or most recent signal date)
     today = date.today().isoformat()
 
-    # Find the best candidate: highest score where insider_score > 0 AND total_score >= threshold
+    # Check for SOTD decision from the scoring pipeline
+    sotd_decision = None
+    try:
+        cur.execute(
+            "SELECT decision_json FROM sotd_decisions WHERE date = ?",
+            (today,)
+        )
+        row = cur.fetchone()
+        if row:
+            sotd_decision = json.loads(row['decision_json'])
+    except Exception:
+        pass  # Table may not exist yet
+
+    # If we have a scoring pipeline decision, use it
+    if sotd_decision and not sotd_decision.get('has_pick'):
+        # NO TRADE day - return detailed rejection info
+        conn.close()
+        return jsonify({
+            "has_pick": False,
+            "no_trade": True,
+            "reason": sotd_decision.get('reason', 'Quality bar not met'),
+            "candidates_count": sotd_decision.get('candidates_count', 0),
+            "filtered_out_count": sotd_decision.get('filtered_out_count', 0),
+            "top_candidates": sotd_decision.get('top_candidates', []),
+            "rejected_samples": sotd_decision.get('rejected_samples', []),
+            "best_candidate": (
+                sotd_decision['top_candidates'][0]
+                if sotd_decision.get('top_candidates')
+                else None
+            ),
+            "missing": sotd_decision.get('reason', 'Unknown'),
+        })
+
+    # Find the best candidate using quality gates:
+    # - insider_score > 0 (must have insider activity)
+    # - total_score >= MIN_SOTD_SCORE
+    # - at least MIN_ACTIVE_SIGNALS active signals
+    # - at least one strong signal (insider or options >= MIN_INSIDER_OR_OPTIONS_SCORE)
     cur.execute("""
         SELECT id, date, ticker, total_score, tier, action,
                insider_score, options_score, social_score, technical_score,
@@ -157,10 +193,43 @@ def api_stock_of_day():
         FROM signals
         WHERE date = ? AND insider_score > 0 AND total_score >= ?
         ORDER BY total_score DESC
-        LIMIT 1
     """, (today, config.STOCK_OF_DAY_MIN_SCORE))
 
-    pick = cur.fetchone()
+    candidates = [dict(row) for row in cur.fetchall()]
+
+    # Apply additional quality gates
+    pick = None
+    rejection_reason = None
+
+    for candidate in candidates:
+        # Count active signals
+        active_signals = sum([
+            1 if candidate.get('insider_score', 0) > 0 else 0,
+            1 if candidate.get('options_score', 0) > 0 else 0,
+            1 if candidate.get('social_score', 0) > 0 else 0,
+        ])
+
+        if active_signals < config.MIN_ACTIVE_SIGNALS:
+            rejection_reason = (
+                f"{candidate['ticker']}: Only {active_signals} active signal(s), "
+                f"need {config.MIN_ACTIVE_SIGNALS}"
+            )
+            continue
+
+        # Check for at least one strong signal
+        insider_score = candidate.get('insider_score', 0)
+        options_score = candidate.get('options_score', 0)
+        if (insider_score < config.MIN_INSIDER_OR_OPTIONS_SCORE and
+                options_score < config.MIN_INSIDER_OR_OPTIONS_SCORE):
+            rejection_reason = (
+                f"{candidate['ticker']}: No strong signal "
+                f"(insider={insider_score}, options={options_score}, "
+                f"need >= {config.MIN_INSIDER_OR_OPTIONS_SCORE})"
+            )
+            continue
+
+        pick = candidate
+        break
 
     # If no pick today, check most recent date
     if not pick:
@@ -172,57 +241,69 @@ def api_stock_of_day():
             FROM signals
             WHERE insider_score > 0 AND total_score >= ?
             ORDER BY date DESC, total_score DESC
-            LIMIT 1
+            LIMIT 5
         """, (config.STOCK_OF_DAY_MIN_SCORE,))
-        pick = cur.fetchone()
+        historical = [dict(row) for row in cur.fetchall()]
+
+        for candidate in historical:
+            active_signals = sum([
+                1 if candidate.get('insider_score', 0) > 0 else 0,
+                1 if candidate.get('options_score', 0) > 0 else 0,
+                1 if candidate.get('social_score', 0) > 0 else 0,
+            ])
+            if active_signals < config.MIN_ACTIVE_SIGNALS:
+                continue
+            insider_score = candidate.get('insider_score', 0)
+            options_score = candidate.get('options_score', 0)
+            if (insider_score < config.MIN_INSIDER_OR_OPTIONS_SCORE and
+                    options_score < config.MIN_INSIDER_OR_OPTIONS_SCORE):
+                continue
+            pick = candidate
+            break
 
     if not pick:
-        # No qualifying pick - find best candidate to show what's missing
+        # NO TRADE - show best candidate info and reason
         cur.execute("""
             SELECT ticker, total_score, insider_score, options_score, social_score
             FROM signals
             WHERE date = ?
             ORDER BY total_score DESC
-            LIMIT 1
+            LIMIT 5
         """, (today,))
-        best_candidate = cur.fetchone()
+        top_candidates = [dict(row) for row in cur.fetchall()]
         conn.close()
 
-        if best_candidate:
-            missing = []
-            if not best_candidate['insider_score'] or best_candidate['insider_score'] == 0:
-                missing.append("Insider activity")
-            if not best_candidate['social_score'] or best_candidate['social_score'] == 0:
-                missing.append("Social confirmation")
-            if best_candidate['total_score'] < config.STOCK_OF_DAY_MIN_SCORE:
-                missing.append(f"Score below {config.STOCK_OF_DAY_MIN_SCORE}")
+        best = top_candidates[0] if top_candidates else None
+        if not rejection_reason and best:
+            if best['total_score'] < config.STOCK_OF_DAY_MIN_SCORE:
+                rejection_reason = (
+                    f"Best score {best['total_score']} below minimum {config.STOCK_OF_DAY_MIN_SCORE}"
+                )
+            else:
+                rejection_reason = "No candidate meets all quality criteria"
+        elif not rejection_reason:
+            rejection_reason = "No signals today"
 
-            return jsonify({
-                "has_pick": False,
-                "best_candidate": {
-                    "ticker": best_candidate['ticker'],
-                    "score": best_candidate['total_score']
-                },
-                "missing": ", ".join(missing) if missing else "Unknown"
-            })
-        else:
-            return jsonify({"has_pick": False, "best_candidate": None, "missing": "No signals today"})
+        return jsonify({
+            "has_pick": False,
+            "no_trade": True,
+            "reason": rejection_reason,
+            "best_candidate": {"ticker": best['ticker'], "score": best['total_score']} if best else None,
+            "top_candidates": top_candidates[:5],
+            "missing": rejection_reason,
+        })
 
-    # We have a pick - get current price
-    pick_dict = dict(pick)
-    ticker = pick_dict['ticker']
-
+    # We have a qualifying pick
+    ticker = pick['ticker']
     current_price = get_current_price(ticker)
     if current_price is None:
-        current_price = pick_dict['entry_price'] or 0
+        current_price = pick['entry_price'] or 0
 
-    # Calculate entry, stop, target based on current price
     entry = round(current_price, 2)
     stop = round(entry * (1 - config.DEFAULT_STOP_PCT), 2)
     target = round(entry * (1 + config.DEFAULT_TARGET_PCT), 2)
 
-    # Determine confidence level
-    score = pick_dict['total_score']
+    score = pick['total_score']
     if score >= 50:
         confidence = "VERY HIGH"
     elif score >= 40:
@@ -232,21 +313,21 @@ def api_stock_of_day():
     else:
         confidence = "LOW"
 
-    # Build summary from available signals
     summary_parts = []
-    if pick_dict['insider_score'] and pick_dict['insider_score'] > 15:
+    if pick['insider_score'] and pick['insider_score'] > 15:
         summary_parts.append("Insider buying")
-    if pick_dict['options_score'] and pick_dict['options_score'] > 10:
+    if pick['options_score'] and pick['options_score'] > 10:
         summary_parts.append("bullish options flow")
-    if pick_dict['social_score'] and pick_dict['social_score'] > 5:
+    if pick['social_score'] and pick['social_score'] > 5:
         summary_parts.append("social momentum")
 
-    summary = " + ".join(summary_parts) if summary_parts else pick_dict.get('notes', '')
+    summary = " + ".join(summary_parts) if summary_parts else pick.get('notes', '')
 
     conn.close()
 
     return jsonify({
         "has_pick": True,
+        "no_trade": False,
         "ticker": ticker,
         "entry": entry,
         "stop": stop,
@@ -254,11 +335,11 @@ def api_stock_of_day():
         "score": score,
         "confidence": confidence,
         "summary": summary,
-        "insider_score": pick_dict['insider_score'],
-        "options_score": pick_dict['options_score'],
-        "social_score": pick_dict['social_score'],
-        "signal_id": pick_dict['id'],
-        "date": pick_dict['date']
+        "insider_score": pick['insider_score'],
+        "options_score": pick['options_score'],
+        "social_score": pick['social_score'],
+        "signal_id": pick['id'],
+        "date": pick['date']
     })
 
 

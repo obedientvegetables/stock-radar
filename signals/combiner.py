@@ -15,6 +15,7 @@ POSITION SIZING:
 """
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import date
 from typing import Optional
@@ -28,6 +29,9 @@ from utils.db import get_db
 from signals.insider_signal import score_insider, InsiderSignal
 from signals.options_signal import score_options, OptionsSignal
 from signals.social_signal import score_social, SocialSignal
+from signals.quality_filter import filter_universe
+
+logger = logging.getLogger('stock_radar.combiner')
 
 
 @dataclass
@@ -204,6 +208,98 @@ def save_signal(signal: CombinedSignal) -> bool:
         return False
 
 
+def select_stock_of_the_day(candidates: list[CombinedSignal]) -> tuple[Optional[CombinedSignal], str]:
+    """
+    Select Stock of the Day or return None if quality bar not met.
+
+    Quality requirements:
+    - Minimum total score (MIN_SOTD_SCORE, default 35)
+    - At least MIN_ACTIVE_SIGNALS active signals (score > 0)
+    - At least one strong insider or options signal (score >= MIN_INSIDER_OR_OPTIONS_SCORE)
+
+    Args:
+        candidates: List of CombinedSignal objects (already scored)
+
+    Returns:
+        Tuple of (selected_signal or None, reason_string)
+    """
+    if not candidates:
+        return None, "No candidates passed quality filters"
+
+    # Sort by total score descending
+    sorted_candidates = sorted(candidates, key=lambda x: x.total_score, reverse=True)
+    top_pick = sorted_candidates[0]
+
+    # Check minimum score
+    if top_pick.total_score < config.STOCK_OF_DAY_MIN_SCORE:
+        return None, (
+            f"Best score {top_pick.total_score} ({top_pick.ticker}) "
+            f"below minimum {config.STOCK_OF_DAY_MIN_SCORE}"
+        )
+
+    # Count active signals (score > 0)
+    active_signals = sum([
+        1 if top_pick.insider_score > 0 else 0,
+        1 if top_pick.options_score > 0 else 0,
+        1 if top_pick.social_score > 0 else 0,
+    ])
+
+    if active_signals < config.MIN_ACTIVE_SIGNALS:
+        return None, (
+            f"{top_pick.ticker}: Only {active_signals} active signal(s), "
+            f"need {config.MIN_ACTIVE_SIGNALS}"
+        )
+
+    # Check for at least one strong signal
+    if (top_pick.insider_score < config.MIN_INSIDER_OR_OPTIONS_SCORE and
+            top_pick.options_score < config.MIN_INSIDER_OR_OPTIONS_SCORE):
+        return None, (
+            f"{top_pick.ticker}: No strong insider ({top_pick.insider_score}) "
+            f"or options ({top_pick.options_score}) signal "
+            f"(need >= {config.MIN_INSIDER_OR_OPTIONS_SCORE})"
+        )
+
+    return top_pick, "Meets all quality criteria"
+
+
+def log_daily_analysis(
+    candidates: list[CombinedSignal],
+    filtered_out: list[tuple[str, str]],
+    final_pick: Optional[CombinedSignal],
+    reason: str,
+):
+    """
+    Log the full decision process for debugging.
+
+    Args:
+        candidates: Stocks that passed quality filter and were scored
+        filtered_out: List of (ticker, reason) tuples for rejected stocks
+        final_pick: The selected SOTD signal, or None
+        reason: Reason for the final decision
+    """
+    logger.info(f"=== SOTD Analysis for {date.today()} ===")
+    logger.info(f"Stocks filtered out by quality gate: {len(filtered_out)}")
+    for stock, filter_reason in filtered_out[:10]:
+        logger.info(f"  REJECTED {stock}: {filter_reason}")
+    if len(filtered_out) > 10:
+        logger.info(f"  ... and {len(filtered_out) - 10} more")
+
+    logger.info(f"Candidates that passed filters: {len(candidates)}")
+    sorted_candidates = sorted(candidates, key=lambda c: c.total_score, reverse=True)
+    for c in sorted_candidates[:5]:
+        logger.info(
+            f"  {c.ticker}: Score {c.total_score} "
+            f"(insider={c.insider_score}, "
+            f"options={c.options_score}, "
+            f"social={c.social_score})"
+        )
+
+    if final_pick:
+        logger.info(f"SELECTED: {final_pick.ticker} - {reason}")
+    else:
+        logger.info(f"NO TRADE: {reason}")
+
+
 def get_scoring_universe() -> list[str]:
     """
     Get the universe of tickers to score.
@@ -247,7 +343,14 @@ def get_scoring_universe() -> list[str]:
 
 def run_daily_scoring(target_date: Optional[date] = None) -> list[CombinedSignal]:
     """
-    Run the daily scoring pipeline.
+    Run the daily scoring pipeline with quality filtering.
+
+    Steps:
+    1. Get scoring universe (tickers with any signal activity)
+    2. Apply quality filter (price, market cap, volume gates)
+    3. Score remaining tickers
+    4. Select Stock of the Day (or NO_TRADE)
+    5. Log the full decision process
 
     Args:
         target_date: Date to score (default: today)
@@ -260,22 +363,107 @@ def run_daily_scoring(target_date: Optional[date] = None) -> list[CombinedSignal
 
     # Get universe
     universe = get_scoring_universe()
-    print(f"Scoring {len(universe)} tickers...")
+    logger.info(f"Scoring universe: {len(universe)} tickers")
+    print(f"Found {len(universe)} tickers in scoring universe")
 
+    # Apply quality filter
+    print("Applying quality filters...")
+    passed_tickers, filtered_out = filter_universe(universe)
+    print(f"  Passed quality filter: {len(passed_tickers)}")
+    print(f"  Rejected by quality filter: {len(filtered_out)}")
+
+    if filtered_out:
+        for ticker, reason in filtered_out[:5]:
+            print(f"    REJECTED {ticker}: {reason}")
+        if len(filtered_out) > 5:
+            print(f"    ... and {len(filtered_out) - 5} more")
+
+    if not passed_tickers:
+        print("No tickers passed quality filters.")
+        log_daily_analysis([], filtered_out, None, "No candidates passed quality filters")
+        return []
+
+    # Score remaining tickers
+    print(f"Scoring {len(passed_tickers)} tickers...")
     signals = []
 
-    for ticker in universe:
+    for ticker in passed_tickers:
         try:
             signal = combine_signals(ticker, target_date)
             if save_signal(signal):
                 signals.append(signal)
         except Exception as e:
+            logger.error(f"Error scoring {ticker}: {e}")
             print(f"Error scoring {ticker}: {e}")
 
     # Sort by total score descending
     signals.sort(key=lambda s: s.total_score, reverse=True)
 
+    # Select Stock of the Day
+    sotd_pick, sotd_reason = select_stock_of_the_day(signals)
+
+    # Save SOTD decision to database
+    _save_sotd_decision(target_date, sotd_pick, sotd_reason, signals, filtered_out)
+
+    # Log the full decision process
+    log_daily_analysis(signals, filtered_out, sotd_pick, sotd_reason)
+
+    if sotd_pick:
+        print(f"\n  STOCK OF THE DAY: {sotd_pick.ticker} (Score: {sotd_pick.total_score})")
+    else:
+        print(f"\n  NO TRADE TODAY: {sotd_reason}")
+
     return signals
+
+
+def _save_sotd_decision(
+    target_date: date,
+    pick: Optional[CombinedSignal],
+    reason: str,
+    candidates: list[CombinedSignal],
+    filtered_out: list[tuple[str, str]],
+):
+    """Save the SOTD decision to the database for the dashboard to read."""
+    try:
+        decision = {
+            "date": target_date.isoformat(),
+            "has_pick": pick is not None,
+            "ticker": pick.ticker if pick else None,
+            "score": pick.total_score if pick else None,
+            "reason": reason,
+            "candidates_count": len(candidates),
+            "filtered_out_count": len(filtered_out),
+            "top_candidates": [
+                {
+                    "ticker": c.ticker,
+                    "total_score": c.total_score,
+                    "insider_score": c.insider_score,
+                    "options_score": c.options_score,
+                    "social_score": c.social_score,
+                }
+                for c in sorted(candidates, key=lambda x: x.total_score, reverse=True)[:5]
+            ],
+            "rejected_samples": [
+                {"ticker": t, "reason": r}
+                for t, r in filtered_out[:10]
+            ],
+        }
+
+        with get_db() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sotd_decisions (
+                    date TEXT PRIMARY KEY,
+                    decision_json TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO sotd_decisions (date, decision_json) VALUES (?, ?)",
+                (target_date.isoformat(), json.dumps(decision))
+            )
+    except Exception as e:
+        logger.error(f"Error saving SOTD decision: {e}")
 
 
 def get_top_signals(

@@ -37,6 +37,7 @@ SCORING RUBRIC (0-30 points max):
 """
 
 import json
+import logging
 from dataclasses import dataclass, asdict
 from datetime import date, timedelta
 from typing import Optional
@@ -47,6 +48,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.config import config
 from utils.db import get_db
+
+logger = logging.getLogger('stock_radar.insider')
 
 
 def classify_insider_title(title: str) -> str:
@@ -169,6 +172,7 @@ def get_insider_activity(ticker: str, lookback_days: int = 14) -> dict:
         return {
             "has_buying": False,
             "trades": [],
+            "meaningful_trades": [],
             "unique_buyers": 0,
             "total_value": 0,
             "ceo_cfo_buying": False,
@@ -177,15 +181,42 @@ def get_insider_activity(ticker: str, lookback_days: int = 14) -> dict:
             "largest_buyer": "",
             "largest_buyer_title": "",
             "largest_buyer_type": "",
+            "filtered_out_count": 0,
         }
 
-    # Calculate metrics
+    # Filter out tiny purchases below minimum threshold
+    meaningful_trades = [t for t in trades if t['total_value'] >= config.MIN_INSIDER_PURCHASE]
+    filtered_out_count = len(trades) - len(meaningful_trades)
+
+    if filtered_out_count > 0:
+        logger.info(
+            f"{ticker}: Filtered out {filtered_out_count} insider trade(s) "
+            f"below ${config.MIN_INSIDER_PURCHASE:,} minimum"
+        )
+
+    if not meaningful_trades:
+        return {
+            "has_buying": False,
+            "trades": trades,
+            "meaningful_trades": [],
+            "unique_buyers": 0,
+            "total_value": 0,
+            "ceo_cfo_buying": False,
+            "csuite_buying": False,
+            "largest_buy": 0,
+            "largest_buyer": "",
+            "largest_buyer_title": "",
+            "largest_buyer_type": "",
+            "filtered_out_count": filtered_out_count,
+        }
+
+    # Calculate metrics using only meaningful trades
     unique_buyers = set()
     ceo_cfo_buying = False
     csuite_buying = False
     total_value = 0
 
-    for trade in trades:
+    for trade in meaningful_trades:
         unique_buyers.add(trade["insider_name"])
         total_value += trade["total_value"]
 
@@ -196,12 +227,13 @@ def get_insider_activity(ticker: str, lookback_days: int = 14) -> dict:
         elif title_type == "C-Suite":
             csuite_buying = True
 
-    largest = trades[0] if trades else {}
+    largest = meaningful_trades[0] if meaningful_trades else {}
     largest_type = classify_insider_title(largest.get("insider_title", ""))
 
     return {
         "has_buying": True,
         "trades": trades,
+        "meaningful_trades": meaningful_trades,
         "unique_buyers": len(unique_buyers),
         "buyer_names": list(unique_buyers),
         "total_value": total_value,
@@ -211,6 +243,7 @@ def get_insider_activity(ticker: str, lookback_days: int = 14) -> dict:
         "largest_buyer": largest.get("insider_name", ""),
         "largest_buyer_title": largest.get("insider_title", ""),
         "largest_buyer_type": largest_type,
+        "filtered_out_count": filtered_out_count,
     }
 
 
@@ -284,13 +317,20 @@ def score_insider(ticker: str, lookback_days: int = None) -> InsiderSignal:
         score_breakdown.append("+6: C-Suite buying (COO/President/CTO)")
     # Directors get +0 bonus (weakest signal per validation)
 
-    # Value bonuses - reduced weight since title matters more than size
-    if activity["total_value"] > 1_000_000:
-        score += 4  # +2 for >$500k, +2 more for >$1M
-        score_breakdown.append(f"+4: Buy value ${activity['total_value']:,.0f} (>$1M)")
-    elif activity["total_value"] > 500_000:
+    # Value bonuses - scaling based on purchase size
+    # $50K-$100K: Base score only (already counted by having any buy)
+    # $100K-$500K: +2 points
+    # $500K-$1M: +4 points
+    # $1M+: +6 points
+    if activity["total_value"] >= 1_000_000:
+        score += 6
+        score_breakdown.append(f"+6: Buy value ${activity['total_value']:,.0f} (>$1M)")
+    elif activity["total_value"] >= 500_000:
+        score += 4
+        score_breakdown.append(f"+4: Buy value ${activity['total_value']:,.0f} ($500K-$1M)")
+    elif activity["total_value"] >= 100_000:
         score += 2
-        score_breakdown.append(f"+2: Buy value ${activity['total_value']:,.0f} (>$500k)")
+        score_breakdown.append(f"+2: Buy value ${activity['total_value']:,.0f} ($100K-$500K)")
 
     # Cap at max score
     score = min(score, config.INSIDER_MAX_SCORE)

@@ -337,29 +337,74 @@
                     `;
                 } else {
                     stockOfDayTicker = null;
-                    section.className = 'bg-radar-card rounded-xl border-2 border-radar-border p-6';
+                    section.className = 'bg-radar-card rounded-xl border-2 border-radar-yellow/50 p-6';
 
-                    let candidateInfo = '';
-                    if (data.best_candidate) {
-                        candidateInfo = `
-                            <div class="mt-4 text-sm">
-                                <span class="text-radar-muted">Best candidate:</span>
-                                <span class="text-radar-blue font-medium ml-1">${data.best_candidate.ticker}</span>
-                                <span class="text-radar-muted ml-1">(score ${data.best_candidate.score})</span>
+                    // Build rejection reason display
+                    let reasonHtml = '';
+                    if (data.reason) {
+                        reasonHtml = `
+                            <div class="mt-4 bg-radar-bg rounded-lg p-4 border border-radar-border max-w-lg mx-auto">
+                                <div class="text-sm text-radar-muted mb-1">Reason:</div>
+                                <div class="text-sm text-radar-yellow font-medium">${data.reason}</div>
                             </div>
-                            <div class="text-sm text-radar-muted mt-1">
-                                Missing: ${data.missing}
+                        `;
+                    }
+
+                    // Show top candidates that were considered but didn't qualify
+                    let candidatesHtml = '';
+                    const topCandidates = data.top_candidates || [];
+                    if (topCandidates.length > 0) {
+                        candidatesHtml = `
+                            <div class="mt-4 max-w-lg mx-auto">
+                                <div class="text-xs text-radar-muted mb-2 text-left">Candidates considered:</div>
+                                <div class="space-y-1">
+                                    ${topCandidates.slice(0, 5).map(c => {
+                                        const activeCount = (c.insider_score > 0 ? 1 : 0) +
+                                                          (c.options_score > 0 ? 1 : 0) +
+                                                          (c.social_score > 0 ? 1 : 0);
+                                        const scoreColor = (c.total_score || c.score) >= 35 ? 'text-radar-green' : 'text-radar-muted';
+                                        return `
+                                            <div class="flex items-center justify-between text-xs bg-radar-bg/50 rounded p-2 border border-radar-border/50">
+                                                <span class="text-radar-blue font-medium">${c.ticker}</span>
+                                                <span class="${scoreColor}">Score: ${c.total_score || c.score}</span>
+                                                <span class="text-radar-muted">${activeCount}/3 signals</span>
+                                                <span class="text-radar-muted">I:${c.insider_score || 0} O:${c.options_score || 0} S:${c.social_score || 0}</span>
+                                            </div>
+                                        `;
+                                    }).join('')}
+                                </div>
+                            </div>
+                        `;
+                    }
+
+                    // Show rejected stocks from quality filter
+                    let rejectedHtml = '';
+                    const rejectedSamples = data.rejected_samples || [];
+                    if (rejectedSamples.length > 0) {
+                        rejectedHtml = `
+                            <div class="mt-3 max-w-lg mx-auto">
+                                <div class="text-xs text-radar-muted mb-1 text-left">Filtered out by quality gate:</div>
+                                <div class="text-xs text-radar-muted/70 space-y-0.5">
+                                    ${rejectedSamples.slice(0, 5).map(r =>
+                                        `<div>${r.ticker}: ${r.reason}</div>`
+                                    ).join('')}
+                                </div>
                             </div>
                         `;
                     }
 
                     container.innerHTML = `
                         <div class="text-center py-4">
-                            <span class="text-4xl">&#9208;&#65039;</span>
-                            <h2 class="text-xl font-bold text-radar-muted mt-2">NO HIGH-CONFIDENCE PICKS TODAY</h2>
-                            ${candidateInfo}
-                            <div class="text-radar-muted text-sm mt-4">
-                                Check back tomorrow or review the watchlist below.
+                            <div class="text-5xl mb-3">&#128683;</div>
+                            <h2 class="text-2xl font-bold text-radar-yellow">NO TRADE TODAY</h2>
+                            <div class="text-radar-muted text-sm mt-2">
+                                No stock meets the quality bar. Sitting out low-quality days is part of the strategy.
+                            </div>
+                            ${reasonHtml}
+                            ${candidatesHtml}
+                            ${rejectedHtml}
+                            <div class="text-radar-muted text-xs mt-4 italic">
+                                Quality gates: Price &gt; $5 | Market cap &gt; $500M | Avg volume &gt; 500K | Score &gt; ${data.min_score || 35}
                             </div>
                         </div>
                     `;
@@ -427,6 +472,19 @@
                     const optionsColor = s.options_score > 0 ? 'text-radar-green' : 'text-radar-muted';
                     const socialColor = s.social_score > 0 ? 'text-radar-green' : 'text-radar-muted';
 
+                    // Determine why this stock didn't make SOTD
+                    let whyNot = '';
+                    const activeSignals = (s.insider_score > 0 ? 1 : 0) + (s.options_score > 0 ? 1 : 0) + (s.social_score > 0 ? 1 : 0);
+                    if (s.total_score < 35) {
+                        whyNot = `Score too low (need 35+)`;
+                    } else if (activeSignals < 2) {
+                        whyNot = `Only ${activeSignals}/3 signals active (need 2+)`;
+                    } else if (s.insider_score < 10 && s.options_score < 10) {
+                        whyNot = `No strong signal (insider/options need 10+)`;
+                    } else {
+                        whyNot = `Not highest scoring candidate`;
+                    }
+
                     return `
                         <div class="border border-radar-border bg-radar-bg/50 rounded-lg p-4">
                             <div class="flex flex-wrap items-center justify-between gap-3">
@@ -444,6 +502,9 @@
                                     <span class="text-radar-muted ml-3">Stop:</span> <span class="text-radar-red">${fmt.money(s.stop_price)}</span>
                                     <span class="text-radar-muted ml-3">Target:</span> <span class="text-radar-green">${fmt.money(s.target_price)}</span>
                                 </div>
+                            </div>
+                            <div class="mt-2 text-xs text-radar-muted/70 italic">
+                                Not selected: ${whyNot}
                             </div>
                         </div>
                     `;

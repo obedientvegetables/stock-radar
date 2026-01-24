@@ -12,6 +12,7 @@ SCORING RUBRIC (0-25 points max):
 """
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Optional
@@ -22,6 +23,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.config import config
 from utils.db import get_db
+
+logger = logging.getLogger('stock_radar.options')
 
 
 @dataclass
@@ -136,6 +139,44 @@ def score_options(ticker: str, target_date: Optional[date] = None) -> OptionsSig
             unusual_calls=False,
             near_term_focus=False,
             details={"reason": "No options data available"},
+        )
+
+    # Liquidity gate: check if options are liquid enough to trust
+    avg_daily_volume = activity.get("avg_call_volume_20d", 0) + activity.get("avg_put_volume_20d", 0)
+    total_open_interest = activity.get("call_oi", 0) + activity.get("put_oi", 0)
+
+    if avg_daily_volume < config.MIN_OPTIONS_AVG_VOLUME:
+        logger.info(
+            f"{ticker}: Options too illiquid (avg volume {avg_daily_volume} "
+            f"< {config.MIN_OPTIONS_AVG_VOLUME} minimum)"
+        )
+        return OptionsSignal(
+            ticker=ticker,
+            score=0,
+            call_volume=activity["call_volume"],
+            put_volume=activity["put_volume"],
+            call_volume_ratio=activity["call_volume_ratio"],
+            put_call_ratio=activity["put_call_ratio"],
+            unusual_calls=activity["unusual_calls"],
+            near_term_focus=False,
+            details={"reason": f"Options too illiquid (avg volume {avg_daily_volume} < {config.MIN_OPTIONS_AVG_VOLUME})"},
+        )
+
+    if total_open_interest < config.MIN_OPEN_INTEREST:
+        logger.info(
+            f"{ticker}: Insufficient open interest ({total_open_interest} "
+            f"< {config.MIN_OPEN_INTEREST} minimum)"
+        )
+        return OptionsSignal(
+            ticker=ticker,
+            score=0,
+            call_volume=activity["call_volume"],
+            put_volume=activity["put_volume"],
+            call_volume_ratio=activity["call_volume_ratio"],
+            put_call_ratio=activity["put_call_ratio"],
+            unusual_calls=activity["unusual_calls"],
+            near_term_focus=False,
+            details={"reason": f"Insufficient open interest ({total_open_interest} < {config.MIN_OPEN_INTEREST})"},
         )
 
     score = 0

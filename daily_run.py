@@ -13,8 +13,11 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
-from utils.config import config
+from utils.config import config, setup_logging
 from utils.db import get_db, get_table_counts, init_db
+
+# Initialize logging
+setup_logging()
 from collectors.insider import collect_insider_data, get_recent_purchases
 from collectors.options import collect_options_data, get_default_watchlist, get_unusual_options
 from collectors.social import collect_social_data, get_trending_tickers

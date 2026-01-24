@@ -5,6 +5,7 @@ Loads settings from environment variables with sensible defaults.
 """
 
 import os
+import logging
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -55,7 +56,23 @@ class Config:
     DEFAULT_TARGET_PCT = float(os.getenv("DEFAULT_TARGET_PCT", "0.20"))  # 20% profit target
 
     # Stock of the Day
-    STOCK_OF_DAY_MIN_SCORE = 25  # Minimum score to qualify as Stock of the Day
+    STOCK_OF_DAY_MIN_SCORE = int(os.getenv('MIN_SOTD_SCORE', '35'))
+
+    # Quality Gates - Stock filters (applied BEFORE scoring)
+    MIN_STOCK_PRICE = float(os.getenv('MIN_STOCK_PRICE', '5.0'))
+    MIN_MARKET_CAP = int(os.getenv('MIN_MARKET_CAP', '500000000'))  # $500M
+    MIN_AVG_VOLUME = int(os.getenv('MIN_AVG_VOLUME', '500000'))  # 500K shares
+
+    # Insider purchase minimum
+    MIN_INSIDER_PURCHASE = int(os.getenv('MIN_INSIDER_PURCHASE', '50000'))  # $50K
+
+    # Options liquidity gates
+    MIN_OPTIONS_AVG_VOLUME = int(os.getenv('MIN_OPTIONS_VOLUME', '500'))
+    MIN_OPEN_INTEREST = int(os.getenv('MIN_OPEN_INTEREST', '1000'))
+
+    # SOTD quality requirements
+    MIN_ACTIVE_SIGNALS = int(os.getenv('MIN_ACTIVE_SIGNALS', '2'))
+    MIN_INSIDER_OR_OPTIONS_SCORE = 10  # At least one strong signal required
 
     # Paper Trading
     PAPER_PORTFOLIO_SIZE = float(os.getenv("PAPER_PORTFOLIO_SIZE", "10000"))
@@ -88,6 +105,53 @@ class Config:
             issues.append("Email credentials not configured (EMAIL_USERNAME, EMAIL_PASSWORD)")
 
         return issues
+
+
+def setup_logging(level: str = None):
+    """
+    Configure logging for the stock_radar system.
+
+    Logs to both console and a rotating file in the logs directory.
+
+    Args:
+        level: Log level string (DEBUG, INFO, WARNING, ERROR). Defaults to INFO.
+    """
+    log_level = getattr(logging, (level or os.getenv('LOG_LEVEL', 'INFO')).upper(), logging.INFO)
+    logs_dir = Config.LOGS_DIR
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    log_file = logs_dir / "stock_radar.log"
+
+    # Configure root stock_radar logger
+    logger = logging.getLogger('stock_radar')
+    logger.setLevel(log_level)
+
+    # Avoid adding duplicate handlers
+    if not logger.handlers:
+        # Console handler
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(log_level)
+        console_fmt = logging.Formatter(
+            '%(asctime)s [%(name)s] %(levelname)s: %(message)s',
+            datefmt='%H:%M:%S'
+        )
+        console_handler.setFormatter(console_fmt)
+        logger.addHandler(console_handler)
+
+        # File handler
+        from logging.handlers import RotatingFileHandler
+        file_handler = RotatingFileHandler(
+            log_file, maxBytes=5_000_000, backupCount=5
+        )
+        file_handler.setLevel(log_level)
+        file_fmt = logging.Formatter(
+            '%(asctime)s [%(name)s] %(levelname)s: %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        file_handler.setFormatter(file_fmt)
+        logger.addHandler(file_handler)
+
+    return logger
 
 
 # Singleton instance
