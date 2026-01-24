@@ -136,7 +136,16 @@ def api_signals_today():
         signals = [dict(row) for row in cur.fetchall()]
 
     conn.close()
-    return jsonify({"signals": signals, "date": today})
+
+    # Apply quality gate: filter out stocks below minimum price
+    filtered_signals = []
+    for s in signals:
+        price = get_current_price(s['ticker'])
+        if price is not None and price < config.MIN_STOCK_PRICE:
+            continue  # Skip penny stocks that predate quality filter
+        filtered_signals.append(s)
+
+    return jsonify({"signals": filtered_signals, "date": today})
 
 
 @app.route("/api/stock-of-day")
@@ -202,6 +211,15 @@ def api_stock_of_day():
     rejection_reason = None
 
     for candidate in candidates:
+        # Price quality gate: reject stocks below minimum price
+        ticker_price = get_current_price(candidate['ticker'])
+        if ticker_price is not None and ticker_price < config.MIN_STOCK_PRICE:
+            rejection_reason = (
+                f"{candidate['ticker']}: Price ${ticker_price:.2f} "
+                f"below ${config.MIN_STOCK_PRICE:.2f} minimum"
+            )
+            continue
+
         # Count active signals
         active_signals = sum([
             1 if candidate.get('insider_score', 0) > 0 else 0,
@@ -246,6 +264,11 @@ def api_stock_of_day():
         historical = [dict(row) for row in cur.fetchall()]
 
         for candidate in historical:
+            # Price quality gate
+            ticker_price = get_current_price(candidate['ticker'])
+            if ticker_price is not None and ticker_price < config.MIN_STOCK_PRICE:
+                continue
+
             active_signals = sum([
                 1 if candidate.get('insider_score', 0) > 0 else 0,
                 1 if candidate.get('options_score', 0) > 0 else 0,
