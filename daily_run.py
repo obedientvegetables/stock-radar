@@ -963,6 +963,234 @@ def performance():
     click.echo("═" * 60)
 
 
+# Auto Trading Commands
+@cli.command("auto-enter")
+def auto_enter():
+    """Automatically enter trade for Stock of the Day if conditions are met.
+
+    Run after evening signal generation to auto-enter qualifying picks.
+    """
+    import logging
+    from utils.trading_calendar import next_trading_day
+
+    # Setup logging
+    log_file = config.LOGS_DIR / "auto_trades.log"
+    logging.basicConfig(
+        filename=log_file,
+        level=logging.INFO,
+        format='%(asctime)s [AUTO-ENTER] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    logger = logging.getLogger('auto_enter')
+
+    today = date.today()
+    logger.info(f"Starting auto-enter check for {today}")
+
+    # Get Stock of the Day
+    with get_db() as conn:
+        cursor = conn.execute("""
+            SELECT id, ticker, total_score, entry_price, stop_price, target_price,
+                   insider_score, options_score, social_score, notes
+            FROM signals
+            WHERE date = ? AND insider_score > 0 AND total_score >= ?
+            ORDER BY total_score DESC
+            LIMIT 1
+        """, (today.isoformat(), config.STOCK_OF_DAY_MIN_SCORE))
+        pick = cursor.fetchone()
+
+    if not pick:
+        msg = f"No qualifying Stock of the Day for {today} (need insider_score > 0 AND total_score >= {config.STOCK_OF_DAY_MIN_SCORE})"
+        click.echo(msg)
+        logger.info(msg)
+        return
+
+    ticker = pick['ticker']
+    signal_id = pick['id']
+    total_score = pick['total_score']
+
+    click.echo(f"Stock of the Day: {ticker} (score: {total_score})")
+    logger.info(f"Stock of the Day: {ticker} (score: {total_score})")
+
+    # Safety check: Max open positions
+    with get_db() as conn:
+        cursor = conn.execute("SELECT COUNT(*) as count FROM trades WHERE status = 'OPEN'")
+        open_count = cursor.fetchone()['count']
+
+    if open_count >= config.MAX_OPEN_POSITIONS:
+        msg = f"Skipping: Already at max open positions ({open_count}/{config.MAX_OPEN_POSITIONS})"
+        click.echo(msg)
+        logger.info(msg)
+        return
+
+    # Safety check: No existing position in this ticker
+    with get_db() as conn:
+        cursor = conn.execute(
+            "SELECT id FROM trades WHERE ticker = ? AND status = 'OPEN'",
+            (ticker,)
+        )
+        existing = cursor.fetchone()
+
+    if existing:
+        msg = f"Skipping: Already have open position in {ticker}"
+        click.echo(msg)
+        logger.info(msg)
+        return
+
+    # Get current price
+    current_price = get_current_price(ticker)
+    if current_price is None:
+        msg = f"Skipping: Could not get current price for {ticker}"
+        click.echo(msg)
+        logger.warning(msg)
+        return
+
+    # Calculate position size
+    shares = int(config.TRADE_AMOUNT / current_price)
+    if shares < 1:
+        msg = f"Skipping: Price ${current_price:.2f} too high for trade amount ${config.TRADE_AMOUNT}"
+        click.echo(msg)
+        logger.warning(msg)
+        return
+
+    # Get stop and target from signal, or calculate defaults
+    stop_price = pick['stop_price'] if pick['stop_price'] else current_price * (1 - config.DEFAULT_STOP_PCT)
+    target_price = pick['target_price'] if pick['target_price'] else current_price * (1 + config.DEFAULT_TARGET_PCT)
+
+    # Get next trading day for entry date
+    entry_date = next_trading_day(today)
+
+    # Create trade record
+    notes = f"Auto-entry: Score {total_score} | I:{pick['insider_score']} O:{pick['options_score']} S:{pick['social_score']}"
+    if pick['notes']:
+        notes = f"{notes} | {pick['notes']}"
+
+    with get_db() as conn:
+        conn.execute("""
+            INSERT INTO trades (signal_id, ticker, entry_date, entry_price, shares, stop_price, target_price, status, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
+        """, (signal_id, ticker, entry_date.isoformat(), current_price, shares, stop_price, target_price, notes))
+
+    # Log success
+    actual_value = shares * current_price
+    msg = f"AUTO-ENTERED: {ticker} @ ${current_price:.2f} x {shares} shares (${actual_value:.2f})"
+    click.echo()
+    click.echo(f"✓ {msg}")
+    click.echo(f"  Entry date: {entry_date}")
+    click.echo(f"  Stop: ${stop_price:.2f} ({100*(stop_price/current_price - 1):+.1f}%)")
+    click.echo(f"  Target: ${target_price:.2f} ({100*(target_price/current_price - 1):+.1f}%)")
+    click.echo(f"  Signal score: {total_score}")
+
+    logger.info(msg)
+    logger.info(f"  Entry date: {entry_date}, Stop: ${stop_price:.2f}, Target: ${target_price:.2f}")
+
+
+@cli.command("auto-exit")
+def auto_exit():
+    """Automatically exit trades when stop/target/time conditions are met.
+
+    Run daily during market hours to check exit conditions.
+    """
+    import logging
+
+    # Setup logging
+    log_file = config.LOGS_DIR / "auto_trades.log"
+    logging.basicConfig(
+        filename=log_file,
+        level=logging.INFO,
+        format='%(asctime)s [AUTO-EXIT] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    logger = logging.getLogger('auto_exit')
+
+    today = date.today()
+    logger.info(f"Starting auto-exit check for {today}")
+
+    # Get all open positions
+    with get_db() as conn:
+        cursor = conn.execute("""
+            SELECT id, ticker, entry_date, entry_price, shares, stop_price, target_price, notes
+            FROM trades
+            WHERE status = 'OPEN'
+            ORDER BY entry_date
+        """)
+        open_trades = cursor.fetchall()
+
+    if not open_trades:
+        click.echo("No open positions to check.")
+        logger.info("No open positions to check")
+        return
+
+    click.echo(f"Checking {len(open_trades)} open positions...")
+    logger.info(f"Checking {len(open_trades)} open positions")
+
+    exits_made = 0
+
+    for trade in open_trades:
+        ticker = trade['ticker']
+        entry_date = datetime.strptime(trade['entry_date'], "%Y-%m-%d").date()
+        entry_price = trade['entry_price']
+        shares = trade['shares']
+        stop_price = trade['stop_price'] or entry_price * (1 - config.DEFAULT_STOP_PCT)
+        target_price = trade['target_price'] or entry_price * (1 + config.DEFAULT_TARGET_PCT)
+
+        # Get current price
+        current_price = get_current_price(ticker)
+        if current_price is None:
+            click.echo(f"  {ticker}: Could not get price - skipping")
+            logger.warning(f"{ticker}: Could not get current price")
+            continue
+
+        days_held = (today - entry_date).days
+
+        # Check exit conditions
+        exit_reason = None
+        if current_price <= stop_price:
+            exit_reason = 'STOP'
+        elif current_price >= target_price:
+            exit_reason = 'TARGET'
+        elif days_held >= 5:
+            exit_reason = 'TIME'
+
+        # Calculate current P&L for display
+        change_pct = ((current_price - entry_price) / entry_price) * 100
+
+        if exit_reason:
+            # Execute exit
+            return_pct = ((current_price - entry_price) / entry_price) * 100
+            return_dollars = (current_price - entry_price) * shares
+
+            # Update notes
+            exit_notes = trade['notes'] or ""
+            exit_notes = f"{exit_notes}; Exit: {exit_reason} @ ${current_price:.2f}"
+
+            with get_db() as conn:
+                conn.execute("""
+                    UPDATE trades
+                    SET exit_date = ?, exit_price = ?, exit_reason = ?,
+                        return_pct = ?, return_dollars = ?, days_held = ?,
+                        status = 'CLOSED', notes = ?
+                    WHERE id = ?
+                """, (today.isoformat(), current_price, exit_reason,
+                      return_pct, return_dollars, days_held, exit_notes, trade['id']))
+
+            result_icon = "✅" if return_pct > 0 else "❌"
+            msg = f"AUTO-EXITED: {ticker} - {exit_reason} hit | ${entry_price:.2f} → ${current_price:.2f} ({return_pct:+.1f}%) | ${return_dollars:+.2f}"
+            click.echo(f"  {result_icon} {msg}")
+            logger.info(msg)
+            exits_made += 1
+        else:
+            # Position still open
+            click.echo(f"  {ticker}: ${current_price:.2f} ({change_pct:+.1f}%) | {days_held}d held | HOLD")
+            logger.info(f"{ticker}: ${current_price:.2f} ({change_pct:+.1f}%) - holding ({days_held} days)")
+
+    click.echo()
+    if exits_made > 0:
+        click.echo(f"Closed {exits_made} position(s)")
+    else:
+        click.echo("No exit conditions met - all positions held")
+    logger.info(f"Auto-exit complete: {exits_made} exits made")
+
+
 # Insider-specific commands
 @cli.command("insider-collect")
 @click.option("--count", "-c", default=100, help="Number of filings to fetch")

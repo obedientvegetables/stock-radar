@@ -60,6 +60,10 @@ class Config:
     # Paper Trading
     PAPER_PORTFOLIO_SIZE = float(os.getenv("PAPER_PORTFOLIO_SIZE", "10000"))
 
+    # Auto Trading
+    TRADE_AMOUNT = float(os.getenv("TRADE_AMOUNT", "500"))  # Dollar amount per auto trade
+    MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "5"))  # Max concurrent positions
+
     # Lookback periods
     INSIDER_LOOKBACK_DAYS = 14
     OPTIONS_VOLUME_LOOKBACK = 20

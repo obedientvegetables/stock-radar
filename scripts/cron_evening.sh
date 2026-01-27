@@ -73,6 +73,17 @@ else
     log "WARNING: Email failed with exit code $EMAIL_EXIT"
 fi
 
+# Auto-enter trade for Stock of the Day (if qualifying)
+log "Running: python3 daily_run.py auto-enter"
+python3 daily_run.py auto-enter >> "$LOG_FILE" 2>&1
+AUTOENTER_EXIT=$?
+
+if [ $AUTOENTER_EXIT -eq 0 ]; then
+    log "Auto-enter check completed"
+else
+    log "WARNING: Auto-enter failed with exit code $AUTOENTER_EXIT"
+fi
+
 log "Evening script finished"
 log ""
 
