@@ -1,5 +1,30 @@
-git init
-git add .
-git commit -m "Initial commit - stock radar project"
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
 
+# Environment
+.env
+.venv/
+venv/
+env/
 
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+data/*.db
+logs/*.log
