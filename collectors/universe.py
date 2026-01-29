@@ -153,6 +153,7 @@ def update_universe_db(stocks: List[Dict], source: str = 'sp500') -> int:
                 stock['avg_volume'],
                 stock['price'],
                 source == 'sp500',
+                1,  # passes_liquidity
                 today,
                 today
             ))
