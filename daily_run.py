@@ -1270,5 +1270,547 @@ def validate_report():
     click.echo(report)
 
 
+# ============================================================================
+# V2 MOMENTUM TRADING SYSTEM COMMANDS
+# ============================================================================
+
+@cli.command("v2-init")
+def v2_init():
+    """Initialize V2 database tables and paper trading portfolio."""
+    click.echo("Initializing V2 Momentum Trading System...")
+    click.echo()
+
+    # Initialize database with v2 tables
+    init_db()
+    click.echo("  ✓ Database tables created")
+
+    # Initialize paper trading portfolio
+    from utils.paper_trading import PaperTradingEngine
+    engine = PaperTradingEngine()
+    status = engine.get_portfolio_status()
+
+    click.echo(f"  ✓ Paper trading portfolio initialized")
+    click.echo(f"    Starting capital: ${status.cash:,.2f}")
+    click.echo()
+    click.echo("V2 system ready!")
+    click.echo()
+    click.echo("Next steps:")
+    click.echo("  1. Set FMP_API_KEY in .env for fundamentals data")
+    click.echo("  2. Run 'python3 daily_run.py v2-universe' to build stock universe")
+    click.echo("  3. Run 'python3 daily_run.py v2-scan' to scan for setups")
+
+
+@cli.command("v2-universe")
+@click.option("--limit", "-l", default=None, type=int, help="Limit number of stocks to process")
+def v2_universe(limit):
+    """Build/update the stock universe from S&P 500."""
+    from collectors.universe import get_sp500_tickers, filter_universe, update_universe_db, get_universe_stats
+
+    click.echo("Building stock universe...")
+    click.echo()
+
+    # Get S&P 500 tickers
+    click.echo("Step 1: Fetching S&P 500 constituents...")
+    tickers = get_sp500_tickers()
+    if limit:
+        tickers = tickers[:limit]
+    click.echo(f"  Found {len(tickers)} tickers")
+    click.echo()
+
+    # Filter by liquidity criteria
+    click.echo("Step 2: Filtering by liquidity criteria...")
+    click.echo(f"  Min price: ${config.MIN_STOCK_PRICE}")
+    click.echo(f"  Min market cap: ${config.MIN_MARKET_CAP:,.0f}")
+    click.echo(f"  Min avg volume: {config.MIN_AVG_VOLUME:,}")
+    click.echo()
+
+    filtered = filter_universe(tickers, verbose=True)
+    click.echo()
+    click.echo(f"  Passed filters: {len(filtered)}/{len(tickers)}")
+
+    # Save to database
+    click.echo()
+    click.echo("Step 3: Saving to database...")
+    count = update_universe_db(filtered, source='sp500')
+    click.echo(f"  Saved {count} stocks")
+
+    # Show stats
+    stats = get_universe_stats()
+    click.echo()
+    click.echo("Universe Stats:")
+    click.echo(f"  Total stocks: {stats['total']}")
+    click.echo(f"  Passes liquidity: {stats['passes_liquidity']}")
+    click.echo(f"  In S&P 500: {stats['in_sp500']}")
+
+
+@cli.command("v2-scan")
+@click.option("--limit", "-l", default=50, help="Number of stocks to scan")
+@click.option("--save/--no-save", default=True, help="Save results to database")
+def v2_scan(limit, save):
+    """Run V2 screening: Trend Template + RS + Fundamentals + VCP."""
+    from collectors.universe import get_screened_universe
+    from signals.trend_template import scan_universe as scan_trend, save_results_to_db as save_trend
+    from signals.relative_strength import calculate_all_rs_ratings, update_rs_ratings_in_db
+    from collectors.fundamentals import collect_fundamentals_batch
+    from signals.vcp_detector import scan_for_vcp_patterns
+
+    click.echo(f"V2 Scan - {date.today()}")
+    click.echo("=" * 50)
+    click.echo()
+
+    # Get universe
+    tickers = get_screened_universe(passes_liquidity=True)
+    if not tickers:
+        click.echo("No stocks in universe. Run 'python3 daily_run.py v2-universe' first.")
+        return
+
+    tickers = tickers[:limit]
+    click.echo(f"Scanning {len(tickers)} stocks...")
+    click.echo()
+
+    # Step 1: Trend Template
+    click.echo("Step 1/4: Checking Trend Template...")
+    trend_results = scan_trend(tickers, verbose=True)
+    passing_trend = [r for r in trend_results if r.passes_template]
+    click.echo(f"  Passing Trend Template: {len(passing_trend)}/{len(trend_results)}")
+
+    if save:
+        save_trend(trend_results)
+    click.echo()
+
+    # Step 2: Relative Strength
+    click.echo("Step 2/4: Calculating RS Ratings...")
+    rs_ratings = calculate_all_rs_ratings(tickers, verbose=True)
+    strong_rs = sum(1 for rs in rs_ratings.values() if rs and rs >= config.RS_MIN_RATING)
+    click.echo(f"  RS >= {config.RS_MIN_RATING}: {strong_rs}/{len(rs_ratings)}")
+
+    if save:
+        update_rs_ratings_in_db(rs_ratings)
+    click.echo()
+
+    # Step 3: Fundamentals (only for trend-passing stocks)
+    if passing_trend:
+        click.echo("Step 3/4: Collecting Fundamentals...")
+        passing_tickers = [r.ticker for r in passing_trend]
+        fundamentals = collect_fundamentals_batch(passing_tickers, verbose=True)
+        strong_fundamentals = sum(1 for f in fundamentals if f.fundamental_score >= 50)
+        click.echo(f"  Strong fundamentals (score >= 50): {strong_fundamentals}/{len(fundamentals)}")
+    else:
+        click.echo("Step 3/4: Skipping fundamentals (no trend-passing stocks)")
+    click.echo()
+
+    # Step 4: VCP Detection (only for trend-passing stocks)
+    if passing_trend:
+        click.echo("Step 4/4: Detecting VCP Patterns...")
+        passing_tickers = [r.ticker for r in passing_trend]
+        vcp_results = scan_for_vcp_patterns(passing_tickers, verbose=True)
+        valid_vcp = [v for v in vcp_results if v.is_valid]
+        click.echo(f"  Valid VCP patterns: {len(valid_vcp)}/{len(vcp_results)}")
+    else:
+        click.echo("Step 4/4: Skipping VCP detection (no trend-passing stocks)")
+    click.echo()
+
+    # Summary
+    click.echo("=" * 50)
+    click.echo("SCAN COMPLETE")
+    click.echo("=" * 50)
+    click.echo(f"  Stocks scanned: {len(tickers)}")
+    click.echo(f"  Passing Trend Template: {len(passing_trend)}")
+    click.echo(f"  Strong RS (>= {config.RS_MIN_RATING}): {strong_rs}")
+
+    if passing_trend:
+        click.echo()
+        click.echo("Top candidates (Trend Template compliant):")
+        for r in passing_trend[:10]:
+            rs = rs_ratings.get(r.ticker, 0)
+            click.echo(f"  {r.ticker:<6} Price: ${r.price:.2f}  RS: {rs:.0f}  "
+                      f"From high: {r.distance_from_high_pct:.1f}%")
+
+
+@cli.command("v2-portfolio")
+def v2_portfolio():
+    """Show V2 paper trading portfolio status."""
+    from utils.paper_trading import PaperTradingEngine
+
+    engine = PaperTradingEngine()
+    status = engine.get_portfolio_status()
+
+    click.echo()
+    click.echo("=" * 50)
+    click.echo("V2 PAPER TRADING PORTFOLIO")
+    click.echo("=" * 50)
+    click.echo()
+    click.echo(f"Cash:            ${status.cash:>12,.2f}")
+    click.echo(f"Positions:       ${status.positions_value:>12,.2f}")
+    click.echo(f"Total Value:     ${status.total_value:>12,.2f}")
+    click.echo()
+    click.echo(f"Total P&L:       ${status.total_pnl:>+12,.2f} ({status.total_pnl_pct:+.2f}%)")
+    click.echo()
+    click.echo(f"Open positions: {status.num_positions}/{config.V2_MAX_POSITIONS}")
+    click.echo(f"Available slots: {status.available_slots}")
+    click.echo()
+
+    if status.open_positions:
+        click.echo("Open Positions:")
+        click.echo("-" * 60)
+        for pos in status.open_positions:
+            click.echo(f"  {pos.ticker:<6} {pos.shares:>5} sh @ ${pos.entry_price:.2f}")
+            click.echo(f"         Now: ${pos.current_price:.2f} ({pos.unrealized_pnl_pct:+.1f}%)")
+            click.echo(f"         Stop: ${pos.current_stop:.2f} ({pos.stop_type})")
+            click.echo(f"         Target: ${pos.target_price:.2f}")
+            click.echo(f"         Days held: {pos.days_held}")
+            click.echo()
+    else:
+        click.echo("No open positions")
+
+
+@cli.command("v2-enter")
+@click.argument("ticker")
+@click.option("--price", "-p", type=float, required=True, help="Entry price")
+@click.option("--shares", "-s", type=int, help="Number of shares (auto-calculated if not provided)")
+@click.option("--stop", type=float, help="Stop price (default: -7%)")
+@click.option("--target", type=float, help="Target price (default: +20%)")
+@click.option("--notes", "-n", default="", help="Trade notes")
+def v2_enter(ticker, price, shares, stop, target, notes):
+    """Enter a V2 paper trade."""
+    from utils.paper_trading import PaperTradingEngine
+
+    engine = PaperTradingEngine()
+
+    # Calculate defaults
+    if stop is None:
+        stop = price * (1 - config.V2_DEFAULT_STOP_PCT)
+    if target is None:
+        target = price * (1 + config.V2_DEFAULT_TARGET_PCT)
+    if shares is None:
+        shares = engine.calculate_position_size(price, stop)
+
+    if shares < 1:
+        click.echo(f"Error: Calculated position size is 0 shares")
+        click.echo(f"  Entry: ${price:.2f}, Stop: ${stop:.2f}")
+        click.echo(f"  Risk per share: ${price - stop:.2f}")
+        return
+
+    try:
+        trade_id = engine.enter_trade(
+            ticker=ticker.upper(),
+            entry_price=price,
+            shares=shares,
+            stop_price=stop,
+            target_price=target,
+            signal_source='V2_MANUAL',
+            notes=notes
+        )
+
+        position_value = shares * price
+        risk_dollars = (price - stop) * shares
+        risk_pct = (risk_dollars / config.V2_PAPER_PORTFOLIO_SIZE) * 100
+
+        click.echo()
+        click.echo("✓ V2 Paper trade entered")
+        click.echo(f"  Trade ID: {trade_id}")
+        click.echo(f"  Ticker: {ticker.upper()}")
+        click.echo(f"  Entry: ${price:.2f}")
+        click.echo(f"  Shares: {shares} (${position_value:,.2f})")
+        click.echo(f"  Stop: ${stop:.2f} ({(stop/price - 1)*100:+.1f}%)")
+        click.echo(f"  Target: ${target:.2f} ({(target/price - 1)*100:+.1f}%)")
+        click.echo(f"  Risk: ${risk_dollars:.2f} ({risk_pct:.1f}% of portfolio)")
+
+    except Exception as e:
+        click.echo(f"Error: {e}")
+
+
+@cli.command("v2-exit")
+@click.argument("trade_id", type=int)
+@click.option("--price", "-p", type=float, required=True, help="Exit price")
+@click.option("--reason", "-r", default="MANUAL",
+              type=click.Choice(["TARGET", "STOP", "TRAILING_STOP", "TIME", "MANUAL"]),
+              help="Exit reason")
+def v2_exit(trade_id, price, reason):
+    """Exit a V2 paper trade."""
+    from utils.paper_trading import PaperTradingEngine
+
+    engine = PaperTradingEngine()
+
+    try:
+        result = engine.exit_trade(trade_id, price, reason)
+
+        icon = "✅" if result['return_pct'] > 0 else "❌"
+        click.echo()
+        click.echo(f"{icon} V2 Trade closed")
+        click.echo(f"  Trade ID: {result['trade_id']}")
+        click.echo(f"  Ticker: {result['ticker']}")
+        click.echo(f"  Entry: ${result['entry_price']:.2f} → Exit: ${price:.2f}")
+        click.echo(f"  Return: {result['return_pct']:+.1f}% (${result['return_dollars']:+.2f})")
+        click.echo(f"  R-Multiple: {result['r_multiple']:+.2f}")
+        click.echo(f"  Days held: {result['days_held']}")
+        click.echo(f"  Reason: {reason}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}")
+
+
+@cli.command("v2-watchlist")
+@click.option("--add", "-a", nargs=2, type=(str, float), help="Add ticker with pivot price: -a NVDA 145.50")
+def v2_watchlist(add):
+    """Show or modify V2 watchlist."""
+    from signals.breakout import get_watchlist, add_to_watchlist, expire_old_watchlist_entries
+
+    # Expire old entries first
+    expired = expire_old_watchlist_entries()
+    if expired:
+        click.echo(f"Expired {expired} old watchlist entries")
+        click.echo()
+
+    if add:
+        ticker, pivot = add
+        try:
+            entry_id = add_to_watchlist(ticker.upper(), pivot)
+            click.echo(f"✓ Added {ticker.upper()} to watchlist")
+            click.echo(f"  Pivot: ${pivot:.2f}")
+            click.echo(f"  Stop: ${pivot * (1 - config.V2_DEFAULT_STOP_PCT):.2f}")
+            click.echo(f"  Target: ${pivot * (1 + config.V2_DEFAULT_TARGET_PCT):.2f}")
+            click.echo()
+        except Exception as e:
+            click.echo(f"Error adding to watchlist: {e}")
+            return
+
+    watchlist = get_watchlist(status='WATCHING')
+
+    if not watchlist:
+        click.echo("Watchlist is empty.")
+        click.echo()
+        click.echo("Add stocks with: python3 daily_run.py v2-watchlist --add TICKER PIVOT")
+        return
+
+    click.echo()
+    click.echo(f"V2 Watchlist ({len(watchlist)} stocks)")
+    click.echo("=" * 60)
+
+    for w in watchlist:
+        click.echo(f"\n{w['ticker']}:")
+        click.echo(f"  Pivot: ${w['pivot_price']:.2f}")
+        click.echo(f"  Stop: ${w['stop_price']:.2f}")
+        click.echo(f"  Target: ${w['target_price']:.2f}")
+        click.echo(f"  Score: {w['total_score'] or 'N/A'}")
+        click.echo(f"  Added: {w['added_date']}")
+        if w['notes']:
+            click.echo(f"  Notes: {w['notes']}")
+
+
+@cli.command("v2-check-breakouts")
+def v2_check_breakouts():
+    """Check watchlist for breakouts."""
+    from signals.breakout import check_watchlist_for_breakouts
+    from output.alerts import send_alert, format_breakout_alert
+
+    click.echo("Checking watchlist for breakouts...")
+    click.echo()
+
+    breakouts = check_watchlist_for_breakouts()
+
+    if not breakouts:
+        click.echo("No breakouts detected.")
+        return
+
+    click.echo(f"Found {len(breakouts)} breakout(s)!")
+    click.echo()
+
+    for b in breakouts:
+        click.echo(f"BREAKOUT: {b.ticker}")
+        click.echo(f"  Pivot: ${b.pivot_price:.2f}")
+        click.echo(f"  Current: ${b.current_price:.2f} (+{b.breakout_pct:.1f}%)")
+        click.echo(f"  Volume: {b.volume_ratio:.1f}x average")
+        click.echo(f"  Suggested entry: ${b.suggested_entry:.2f}")
+        click.echo(f"  Stop: ${b.suggested_stop:.2f}")
+        click.echo(f"  Target: ${b.suggested_target:.2f}")
+        click.echo(f"  Shares (2% risk): {b.shares_for_risk}")
+        click.echo()
+
+        # Send alert
+        msg = format_breakout_alert(
+            b.ticker, b.pivot_price, b.current_price, b.volume_ratio,
+            b.suggested_entry, b.suggested_stop, b.suggested_target, b.shares_for_risk
+        )
+        send_alert('BREAKOUT', b.ticker, msg)
+        click.echo(f"  Alert sent!")
+
+
+@cli.command("v2-performance")
+def v2_performance():
+    """Show V2 trading performance metrics."""
+    from utils.paper_trading import PaperTradingEngine
+
+    engine = PaperTradingEngine()
+    metrics = engine.get_performance_metrics()
+    trades = engine.get_closed_trades(limit=20)
+
+    click.echo()
+    click.echo("=" * 50)
+    click.echo("V2 PERFORMANCE METRICS")
+    click.echo("=" * 50)
+    click.echo()
+
+    if metrics.total_trades == 0:
+        click.echo("No closed trades yet.")
+        click.echo()
+        click.echo("Start trading with 'python3 daily_run.py v2-enter TICKER --price PRICE'")
+        return
+
+    click.echo(f"Total Trades: {metrics.total_trades}")
+    click.echo(f"Winners: {metrics.winning_trades} ({metrics.win_rate:.1f}%)")
+    click.echo(f"Losers: {metrics.losing_trades}")
+    click.echo()
+    click.echo(f"Average Win: ${metrics.avg_win:+.2f}")
+    click.echo(f"Average Loss: ${metrics.avg_loss:-.2f}")
+    click.echo(f"Profit Factor: {metrics.profit_factor:.2f}")
+    click.echo(f"Avg R-Multiple: {metrics.avg_r_multiple:+.2f}")
+    click.echo()
+    click.echo(f"Total Return: ${metrics.total_return:+,.2f} ({metrics.total_return_pct:+.2f}%)")
+    click.echo()
+
+    if trades:
+        click.echo("Recent Closed Trades:")
+        click.echo("-" * 50)
+        for t in trades[:10]:
+            icon = "✅" if t.return_pct > 0 else "❌"
+            click.echo(f"  {icon} {t.ticker:<6} {t.return_pct:+.1f}% (R: {t.r_multiple:+.2f}) "
+                      f"{t.days_held}d - {t.exit_reason}")
+
+
+@cli.command("v2-morning")
+def v2_morning():
+    """V2 Morning routine: update data, check gaps, check stops."""
+    from utils.paper_trading import PaperTradingEngine
+
+    click.echo(f"V2 Morning Routine - {date.today()}")
+    click.echo("=" * 50)
+    click.echo()
+
+    engine = PaperTradingEngine()
+
+    # Check open positions and update stops
+    click.echo("Step 1: Checking open positions...")
+    status = engine.get_portfolio_status()
+
+    if status.open_positions:
+        click.echo(f"  Open positions: {status.num_positions}")
+
+        # Check for stop/target hits
+        triggered = engine.check_stops_and_targets()
+        if triggered:
+            click.echo(f"  Triggered exits: {len(triggered)}")
+            for t in triggered:
+                icon = "✅" if t['return_pct'] > 0 else "❌"
+                click.echo(f"    {icon} {t['ticker']}: {t['return_pct']:+.1f}% - {t['reason']}")
+        else:
+            click.echo("  No stops/targets hit")
+    else:
+        click.echo("  No open positions")
+
+    # Take daily snapshot
+    click.echo()
+    click.echo("Step 2: Taking portfolio snapshot...")
+    engine.take_snapshot()
+    click.echo("  Snapshot saved")
+
+    # Show portfolio summary
+    click.echo()
+    click.echo("Portfolio Summary:")
+    click.echo(f"  Total Value: ${status.total_value:,.2f}")
+    click.echo(f"  Total P&L: ${status.total_pnl:+,.2f} ({status.total_pnl_pct:+.2f}%)")
+    click.echo()
+    click.echo("Morning routine complete!")
+
+
+@cli.command("v2-evening")
+@click.option("--skip-scan", is_flag=True, help="Skip the full scan (use existing data)")
+def v2_evening(skip_scan):
+    """V2 Evening routine: full scan, update watchlist, generate report."""
+    from collectors.universe import get_screened_universe
+    from signals.trend_template import scan_universe as scan_trend, save_results_to_db as save_trend, get_compliant_stocks
+    from signals.relative_strength import calculate_all_rs_ratings, update_rs_ratings_in_db
+    from collectors.fundamentals import collect_fundamentals_batch
+    from signals.vcp_detector import scan_for_vcp_patterns
+    from signals.breakout import add_to_watchlist, get_watchlist
+    from utils.paper_trading import PaperTradingEngine
+
+    click.echo(f"V2 Evening Pipeline - {date.today()}")
+    click.echo("=" * 50)
+    click.echo()
+
+    if not skip_scan:
+        # Get universe
+        tickers = get_screened_universe(passes_liquidity=True)
+        if not tickers:
+            click.echo("No stocks in universe. Run 'python3 daily_run.py v2-universe' first.")
+            return
+
+        click.echo(f"Scanning {len(tickers)} stocks...")
+        click.echo()
+
+        # Run scans
+        click.echo("Step 1: Trend Template scan...")
+        trend_results = scan_trend(tickers, verbose=False)
+        passing_trend = [r for r in trend_results if r.passes_template]
+        save_trend(trend_results)
+        click.echo(f"  Passing: {len(passing_trend)}/{len(trend_results)}")
+
+        click.echo("Step 2: RS Ratings...")
+        rs_ratings = calculate_all_rs_ratings(tickers)
+        update_rs_ratings_in_db(rs_ratings)
+        click.echo("  Complete")
+
+        if passing_trend:
+            click.echo("Step 3: Fundamentals...")
+            passing_tickers = [r.ticker for r in passing_trend]
+            collect_fundamentals_batch(passing_tickers, verbose=False)
+            click.echo("  Complete")
+
+            click.echo("Step 4: VCP Detection...")
+            vcp_results = scan_for_vcp_patterns(passing_tickers, verbose=False)
+            valid_vcp = [v for v in vcp_results if v.is_valid]
+            click.echo(f"  Valid patterns: {len(valid_vcp)}")
+
+            # Auto-add VCP patterns to watchlist
+            for vcp in valid_vcp:
+                if vcp.pattern_stage == 'READY':
+                    rs = rs_ratings.get(vcp.ticker, 0)
+                    if rs >= config.RS_MIN_RATING:
+                        add_to_watchlist(
+                            vcp.ticker,
+                            vcp.pivot_price,
+                            pattern_score=vcp.pattern_score,
+                            rs_rating=rs,
+                            notes=f"VCP {vcp.num_contractions} contractions"
+                        )
+                        click.echo(f"    Added {vcp.ticker} to watchlist (pivot ${vcp.pivot_price:.2f})")
+
+        click.echo()
+
+    # Show summary
+    engine = PaperTradingEngine()
+    status = engine.get_portfolio_status()
+    watchlist = get_watchlist(status='WATCHING')
+    compliant = get_compliant_stocks()
+
+    click.echo("=" * 50)
+    click.echo("EVENING SUMMARY")
+    click.echo("=" * 50)
+    click.echo()
+    click.echo(f"Trend Template compliant: {len(compliant)}")
+    click.echo(f"Active watchlist: {len(watchlist)}")
+    click.echo()
+    click.echo(f"Portfolio Value: ${status.total_value:,.2f}")
+    click.echo(f"Total P&L: ${status.total_pnl:+,.2f} ({status.total_pnl_pct:+.2f}%)")
+    click.echo(f"Open positions: {status.num_positions}/{config.V2_MAX_POSITIONS}")
+    click.echo()
+
+    if watchlist:
+        click.echo("Watchlist (monitoring for breakouts):")
+        for w in watchlist[:5]:
+            click.echo(f"  {w['ticker']}: Pivot ${w['pivot_price']:.2f}")
+
+
 if __name__ == "__main__":
     cli()

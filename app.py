@@ -789,6 +789,336 @@ def api_by_buy_size():
     return jsonify(data)
 
 
+# ============================================================================
+# V2 API ENDPOINTS - MOMENTUM TRADING SYSTEM
+# ============================================================================
+
+@app.route("/api/v2/portfolio")
+def api_v2_portfolio():
+    """Get V2 paper trading portfolio status."""
+    try:
+        from utils.paper_trading import PaperTradingEngine
+
+        engine = PaperTradingEngine()
+        status = engine.get_portfolio_status()
+
+        return jsonify({
+            "success": True,
+            "cash": status.cash,
+            "positions_value": status.positions_value,
+            "total_value": status.total_value,
+            "total_pnl": status.total_pnl,
+            "total_pnl_pct": status.total_pnl_pct,
+            "num_positions": status.num_positions,
+            "available_slots": status.available_slots,
+            "positions": [
+                {
+                    "id": p.id,
+                    "ticker": p.ticker,
+                    "shares": p.shares,
+                    "entry_date": p.entry_date.isoformat(),
+                    "entry_price": p.entry_price,
+                    "current_price": p.current_price,
+                    "current_value": p.current_value,
+                    "stop": p.current_stop,
+                    "stop_type": p.stop_type,
+                    "target": p.target_price,
+                    "unrealized_pnl": p.unrealized_pnl,
+                    "unrealized_pnl_pct": p.unrealized_pnl_pct,
+                    "days_held": p.days_held
+                }
+                for p in status.open_positions
+            ]
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.route("/api/v2/watchlist")
+def api_v2_watchlist():
+    """Get V2 watchlist - stocks ready for breakout."""
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT * FROM watchlist
+        WHERE status = 'WATCHING'
+        ORDER BY total_score DESC
+    """)
+
+    watchlist = [dict(row) for row in cur.fetchall()]
+    conn.close()
+
+    return jsonify({"success": True, "watchlist": watchlist})
+
+
+@app.route("/api/v2/screening")
+def api_v2_screening():
+    """Get today's V2 screening results."""
+    conn = get_db()
+    cur = conn.cursor()
+
+    today = date.today().isoformat()
+
+    # Get trend template compliant stocks with fundamentals and VCP data
+    cur.execute("""
+        SELECT
+            t.ticker, t.price, t.ma_50, t.ma_150, t.ma_200,
+            t.rs_rating, t.template_compliant, t.criteria_passed,
+            t.price_within_25pct_of_high, t.price_above_30pct_from_low,
+            f.fundamental_score, f.eps_growth_quarterly, f.revenue_growth_quarterly,
+            v.pattern_valid, v.pattern_score, v.pivot_price, v.pattern_stage
+        FROM trend_template t
+        LEFT JOIN fundamentals f ON t.ticker = f.ticker AND f.date = ?
+        LEFT JOIN vcp_patterns v ON t.ticker = v.ticker AND v.date = ?
+        WHERE t.date = ? AND t.template_compliant = 1
+        ORDER BY t.rs_rating DESC NULLS LAST
+    """, (today, today, today))
+
+    results = [dict(row) for row in cur.fetchall()]
+    conn.close()
+
+    return jsonify({
+        "success": True,
+        "results": results,
+        "date": today,
+        "count": len(results)
+    })
+
+
+@app.route("/api/v2/performance")
+def api_v2_performance():
+    """Get V2 trading performance metrics."""
+    try:
+        from utils.paper_trading import PaperTradingEngine
+
+        engine = PaperTradingEngine()
+        metrics = engine.get_performance_metrics()
+        trades = engine.get_closed_trades(limit=10)
+
+        return jsonify({
+            "success": True,
+            "metrics": {
+                "total_trades": metrics.total_trades,
+                "winning_trades": metrics.winning_trades,
+                "losing_trades": metrics.losing_trades,
+                "win_rate": metrics.win_rate,
+                "avg_win": metrics.avg_win,
+                "avg_loss": metrics.avg_loss,
+                "profit_factor": metrics.profit_factor,
+                "avg_r_multiple": metrics.avg_r_multiple,
+                "total_return": metrics.total_return,
+                "total_return_pct": metrics.total_return_pct
+            },
+            "recent_trades": [
+                {
+                    "id": t.id,
+                    "ticker": t.ticker,
+                    "entry_date": t.entry_date.isoformat(),
+                    "exit_date": t.exit_date.isoformat(),
+                    "return_pct": t.return_pct,
+                    "return_dollars": t.return_dollars,
+                    "r_multiple": t.r_multiple,
+                    "days_held": t.days_held,
+                    "exit_reason": t.exit_reason
+                }
+                for t in trades
+            ]
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.route("/api/v2/alerts")
+def api_v2_alerts():
+    """Get recent V2 alerts."""
+    limit = request.args.get('limit', 20, type=int)
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT * FROM alerts
+        ORDER BY sent_at DESC
+        LIMIT ?
+    """, (limit,))
+
+    alerts = [dict(row) for row in cur.fetchall()]
+    conn.close()
+
+    return jsonify({"success": True, "alerts": alerts})
+
+
+@app.route("/api/v2/enter-trade", methods=["POST"])
+def api_v2_enter_trade():
+    """Enter a new V2 paper trade."""
+    try:
+        from utils.paper_trading import PaperTradingEngine
+
+        data = request.get_json()
+
+        ticker = data.get('ticker', '').upper().strip()
+        price = data.get('price')
+        shares = data.get('shares')
+        stop = data.get('stop')
+        target = data.get('target')
+        signal_source = data.get('signal_source', 'V2_MANUAL')
+        notes = data.get('notes', '')
+
+        if not ticker:
+            return jsonify({"success": False, "error": "Ticker is required"})
+        if not price:
+            return jsonify({"success": False, "error": "Price is required"})
+
+        engine = PaperTradingEngine()
+
+        # Calculate defaults if not provided
+        if not stop:
+            stop = price * (1 - config.V2_DEFAULT_STOP_PCT)
+        if not target:
+            target = price * (1 + config.V2_DEFAULT_TARGET_PCT)
+        if not shares:
+            shares = engine.calculate_position_size(price, stop)
+
+        trade_id = engine.enter_trade(
+            ticker=ticker,
+            entry_price=price,
+            shares=shares,
+            stop_price=stop,
+            target_price=target,
+            signal_source=signal_source,
+            notes=notes
+        )
+
+        return jsonify({
+            "success": True,
+            "trade_id": trade_id,
+            "ticker": ticker,
+            "entry_price": price,
+            "shares": shares,
+            "stop": round(stop, 2),
+            "target": round(target, 2)
+        })
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.route("/api/v2/exit-trade", methods=["POST"])
+def api_v2_exit_trade():
+    """Exit a V2 paper trade."""
+    try:
+        from utils.paper_trading import PaperTradingEngine
+
+        data = request.get_json()
+
+        trade_id = data.get('trade_id')
+        price = data.get('price')
+        reason = data.get('reason', 'MANUAL')
+
+        if not trade_id:
+            return jsonify({"success": False, "error": "Trade ID is required"})
+        if not price:
+            return jsonify({"success": False, "error": "Exit price is required"})
+
+        engine = PaperTradingEngine()
+        result = engine.exit_trade(trade_id, price, reason)
+
+        return jsonify({"success": True, **result})
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.route("/api/v2/update-stop", methods=["POST"])
+def api_v2_update_stop():
+    """Update stop price for an open position."""
+    try:
+        data = request.get_json()
+
+        trade_id = data.get('trade_id')
+        new_stop = data.get('stop')
+
+        if not trade_id or not new_stop:
+            return jsonify({"success": False, "error": "Trade ID and stop price required"})
+
+        conn = get_db()
+        cur = conn.cursor()
+
+        # Get current stop to ensure we're not lowering it
+        cur.execute(
+            "SELECT current_stop, entry_price FROM paper_trades_v2 WHERE id = ? AND status = 'OPEN'",
+            (trade_id,)
+        )
+        row = cur.fetchone()
+
+        if not row:
+            conn.close()
+            return jsonify({"success": False, "error": "Trade not found or not open"})
+
+        if new_stop < row['current_stop']:
+            conn.close()
+            return jsonify({"success": False, "error": "Cannot lower stop price"})
+
+        # Determine stop type
+        if new_stop > row['entry_price']:
+            stop_type = 'TRAILING'
+        elif new_stop == row['entry_price']:
+            stop_type = 'BREAKEVEN'
+        else:
+            stop_type = 'FIXED'
+
+        cur.execute("""
+            UPDATE paper_trades_v2
+            SET current_stop = ?, stop_type = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (new_stop, stop_type, trade_id))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            "success": True,
+            "trade_id": trade_id,
+            "new_stop": new_stop,
+            "stop_type": stop_type
+        })
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.route("/api/v2/universe/stats")
+def api_v2_universe_stats():
+    """Get stock universe statistics."""
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            COUNT(*) as total,
+            SUM(CASE WHEN passes_liquidity = 1 THEN 1 ELSE 0 END) as passes_liquidity,
+            SUM(CASE WHEN passes_trend_template = 1 THEN 1 ELSE 0 END) as passes_trend,
+            SUM(CASE WHEN in_sp500 = 1 THEN 1 ELSE 0 END) as in_sp500,
+            MAX(last_screened) as last_update
+        FROM stock_universe
+    """)
+
+    row = cur.fetchone()
+    conn.close()
+
+    return jsonify({
+        "success": True,
+        "stats": {
+            "total": row['total'] or 0,
+            "passes_liquidity": row['passes_liquidity'] or 0,
+            "passes_trend_template": row['passes_trend'] or 0,
+            "in_sp500": row['in_sp500'] or 0,
+            "last_update": row['last_update']
+        }
+    })
+
+
 if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 5001))
