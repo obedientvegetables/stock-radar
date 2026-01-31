@@ -52,6 +52,12 @@ def dashboard():
     return render_template("dashboard.html")
 
 
+@app.route("/v2")
+def dashboard_v2():
+    """Serve the V2 momentum trading dashboard."""
+    return render_template("dashboard_v2.html")
+
+
 @app.route("/validation")
 def validation():
     """Serve the old validation dashboard."""
