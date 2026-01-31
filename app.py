@@ -789,6 +789,237 @@ def api_by_buy_size():
     return jsonify(data)
 
 
+# ============================================================================
+# V2 API ENDPOINTS: Momentum Trading System
+# ============================================================================
+
+@app.route("/api/v2/portfolio")
+def api_v2_portfolio():
+    """Get V2 paper trading portfolio status."""
+    from utils.paper_trading import PaperTradingEngine
+    
+    engine = PaperTradingEngine()
+    status = engine.get_portfolio_status()
+    
+    return jsonify({
+        "cash": status.cash,
+        "positions_value": status.positions_value,
+        "total_value": status.total_value,
+        "total_pnl": status.total_pnl,
+        "total_pnl_pct": status.total_pnl_pct,
+        "positions": [
+            {
+                "id": p.id,
+                "ticker": p.ticker,
+                "shares": p.shares,
+                "entry_date": p.entry_date.isoformat(),
+                "entry_price": p.entry_price,
+                "stop": p.current_stop,
+                "target": p.target_price,
+            }
+            for p in status.open_positions
+        ]
+    })
+
+
+@app.route("/api/v2/watchlist")
+def api_v2_watchlist():
+    """Get V2 watchlist - stocks passing trend template."""
+    from signals.trend_template import get_compliant_stocks
+    from datetime import date
+    
+    stocks = get_compliant_stocks(date.today())
+    
+    return jsonify({
+        "date": date.today().isoformat(),
+        "count": len(stocks),
+        "stocks": stocks[:50],  # Limit response size
+    })
+
+
+@app.route("/api/v2/screening")
+def api_v2_screening():
+    """Get today's V2 screening results."""
+    from datetime import date
+    
+    conn = get_db()
+    cur = conn.cursor()
+    
+    today = date.today().isoformat()
+    
+    cur.execute("""
+        SELECT t.*, f.fundamental_score, v.pattern_score, v.pivot_price
+        FROM trend_template t
+        LEFT JOIN fundamentals f ON t.ticker = f.ticker AND f.date = ?
+        LEFT JOIN vcp_patterns v ON t.ticker = v.ticker AND v.date = ?
+        WHERE t.date = ? AND t.template_compliant = 1
+        ORDER BY t.rs_rating DESC NULLS LAST
+        LIMIT 50
+    """, (today, today, today))
+    
+    results = [dict(row) for row in cur.fetchall()]
+    conn.close()
+    
+    return jsonify({
+        "date": today,
+        "count": len(results),
+        "results": results,
+    })
+
+
+@app.route("/api/v2/performance")
+def api_v2_performance():
+    """Get V2 paper trading performance stats."""
+    from utils.paper_trading import PaperTradingEngine
+    
+    engine = PaperTradingEngine()
+    stats = engine.get_performance_stats()
+    
+    return jsonify(stats)
+
+
+@app.route("/api/v2/trades")
+def api_v2_trades():
+    """Get V2 trade history."""
+    from utils.paper_trading import PaperTradingEngine
+    
+    limit = request.args.get('limit', 50, type=int)
+    
+    engine = PaperTradingEngine()
+    trades = engine.get_trade_history(days=limit)
+    
+    return jsonify({
+        "count": len(trades),
+        "trades": trades,
+    })
+
+
+@app.route("/api/v2/alerts")
+def api_v2_alerts():
+    """Get recent V2 alerts."""
+    from output.alerts import get_recent_alerts
+    
+    limit = request.args.get('limit', 20, type=int)
+    alert_type = request.args.get('type', None)
+    
+    alerts = get_recent_alerts(limit=limit, alert_type=alert_type)
+    
+    return jsonify({
+        "count": len(alerts),
+        "alerts": alerts,
+    })
+
+
+@app.route("/api/v2/enter-trade", methods=["POST"])
+def api_v2_enter_trade():
+    """Enter a new V2 paper trade."""
+    from utils.paper_trading import PaperTradingEngine
+    
+    data = request.get_json()
+    
+    if not data:
+        return jsonify({"success": False, "error": "No data provided"}), 400
+    
+    required = ['ticker', 'price', 'shares', 'stop', 'target']
+    for field in required:
+        if field not in data:
+            return jsonify({"success": False, "error": f"Missing field: {field}"}), 400
+    
+    engine = PaperTradingEngine()
+    
+    try:
+        trade_id = engine.enter_trade(
+            ticker=data['ticker'].upper(),
+            entry_price=float(data['price']),
+            shares=int(data['shares']),
+            stop_price=float(data['stop']),
+            target_price=float(data['target']),
+            notes=data.get('notes', '')
+        )
+        
+        return jsonify({"success": True, "trade_id": trade_id})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+
+@app.route("/api/v2/exit-trade", methods=["POST"])
+def api_v2_exit_trade():
+    """Exit a V2 paper trade."""
+    from utils.paper_trading import PaperTradingEngine
+    
+    data = request.get_json()
+    
+    if not data or 'trade_id' not in data or 'price' not in data:
+        return jsonify({"success": False, "error": "Missing trade_id or price"}), 400
+    
+    engine = PaperTradingEngine()
+    
+    try:
+        result = engine.exit_trade(
+            trade_id=int(data['trade_id']),
+            exit_price=float(data['price']),
+            reason=data.get('reason', 'MANUAL')
+        )
+        
+        return jsonify({
+            "success": True,
+            "ticker": result.ticker,
+            "return_pct": result.return_pct,
+            "return_dollars": result.return_dollars,
+            "days_held": result.days_held,
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+
+@app.route("/api/v2/analyze/<ticker>")
+def api_v2_analyze(ticker):
+    """Get full V2 analysis for a single stock."""
+    from signals.trend_template import check_trend_template
+    from signals.vcp_detector import detect_vcp
+    from collectors.earnings import is_earnings_safe
+    
+    ticker = ticker.upper()
+    
+    try:
+        # Trend template
+        trend = check_trend_template(ticker)
+        
+        # VCP pattern
+        vcp = detect_vcp(ticker)
+        
+        # Earnings check
+        earnings_safe, earnings_date = is_earnings_safe(ticker)
+        
+        return jsonify({
+            "ticker": ticker,
+            "trend_template": {
+                "passes": trend.passes_template,
+                "criteria_passed": trend.criteria_passed,
+                "price": trend.price,
+                "ma_50": trend.ma_50,
+                "ma_150": trend.ma_150,
+                "ma_200": trend.ma_200,
+                "rs_rating": trend.rs_rating,
+                "distance_from_high_pct": trend.distance_from_high_pct,
+            },
+            "vcp_pattern": {
+                "is_valid": vcp.is_valid,
+                "pattern_score": vcp.pattern_score,
+                "num_contractions": vcp.num_contractions,
+                "pivot_price": vcp.pivot_price,
+                "volume_declining": vcp.volume_declining,
+                "notes": vcp.notes,
+            },
+            "earnings": {
+                "is_safe": earnings_safe,
+                "next_date": earnings_date.isoformat() if earnings_date else None,
+            },
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
 if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 5001))

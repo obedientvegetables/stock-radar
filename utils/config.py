@@ -70,6 +70,44 @@ class Config:
     VIX_EXTREME = 35
     FEAR_GREED_LOW = 25
 
+    # =========================================================================
+    # V2 CONFIGURATION: Minervini Momentum System
+    # =========================================================================
+
+    # Quality Filters
+    MIN_STOCK_PRICE = float(os.getenv("MIN_STOCK_PRICE", "10.0"))
+    MIN_MARKET_CAP = float(os.getenv("MIN_MARKET_CAP", "500000000"))  # $500M
+    MIN_AVG_VOLUME = int(os.getenv("MIN_AVG_VOLUME", "500000"))  # shares/day
+    RS_MIN_RATING = int(os.getenv("RS_MIN_RATING", "70"))  # Top 30%
+
+    # Fundamental Thresholds
+    MIN_EPS_GROWTH = float(os.getenv("MIN_EPS_GROWTH", "15"))  # %
+    MIN_REVENUE_GROWTH = float(os.getenv("MIN_REVENUE_GROWTH", "10"))  # %
+
+    # VCP Pattern Settings
+    MAX_BASE_DEPTH = float(os.getenv("MAX_BASE_DEPTH", "35"))  # %
+    MIN_CONTRACTIONS = int(os.getenv("MIN_CONTRACTIONS", "2"))
+    MAX_CONTRACTIONS = int(os.getenv("MAX_CONTRACTIONS", "5"))
+
+    # V2 Position Sizing
+    V2_PORTFOLIO_SIZE = float(os.getenv("V2_PORTFOLIO_SIZE", "50000"))
+    V2_MAX_POSITION_PCT = float(os.getenv("V2_MAX_POSITION_PCT", "0.20"))
+    V2_MAX_POSITIONS = int(os.getenv("V2_MAX_POSITIONS", "6"))
+    V2_MAX_RISK_PER_TRADE = float(os.getenv("V2_MAX_RISK_PER_TRADE", "0.02"))  # 2%
+    V2_DEFAULT_STOP_PCT = float(os.getenv("V2_DEFAULT_STOP_PCT", "0.07"))  # 7%
+    V2_DEFAULT_TARGET_PCT = float(os.getenv("V2_DEFAULT_TARGET_PCT", "0.20"))  # 20%
+
+    # Breakout Confirmation
+    VOLUME_BREAKOUT_MULTIPLIER = float(os.getenv("VOLUME_BREAKOUT_MULTIPLIER", "1.5"))
+    EARNINGS_BUFFER_DAYS = int(os.getenv("EARNINGS_BUFFER_DAYS", "5"))
+
+    # API Keys
+    FMP_API_KEY = os.getenv("FMP_API_KEY")  # Financial Modeling Prep
+
+    # V2 Alerts
+    ALERT_EMAIL = os.getenv("ALERT_EMAIL", "true").lower() == "true"
+    ALERT_SMS = os.getenv("ALERT_SMS", "false").lower() == "true"
+
     @classmethod
     def ensure_dirs(cls):
         """Create required directories if they don't exist."""

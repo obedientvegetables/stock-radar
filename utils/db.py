@@ -245,6 +245,159 @@ CREATE TABLE IF NOT EXISTS validation_insider (
     UNIQUE(ticker, signal_date)
 );
 
+-- ============================================================================
+-- V2 TABLES: Minervini Momentum System
+-- ============================================================================
+
+-- Trend Template compliance tracking
+CREATE TABLE IF NOT EXISTS trend_template (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    date DATE NOT NULL,
+    price REAL,
+    ma_50 REAL,
+    ma_150 REAL,
+    ma_200 REAL,
+    high_52w REAL,
+    low_52w REAL,
+    -- Template criteria (all must be TRUE for compliance)
+    price_above_ma50 BOOLEAN,
+    price_above_ma150 BOOLEAN,
+    price_above_ma200 BOOLEAN,
+    ma50_above_ma150 BOOLEAN,
+    ma150_above_ma200 BOOLEAN,
+    ma200_trending_up BOOLEAN,
+    price_within_25pct_of_high BOOLEAN,
+    price_above_30pct_from_low BOOLEAN,
+    -- Relative strength
+    rs_rating REAL,
+    -- Overall compliance
+    template_compliant BOOLEAN,
+    criteria_passed INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(ticker, date)
+);
+
+-- Fundamental quality metrics
+CREATE TABLE IF NOT EXISTS fundamentals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    date DATE NOT NULL,
+    -- Earnings
+    eps_quarterly REAL,
+    eps_growth_quarterly REAL,
+    eps_growth_annual REAL,
+    eps_acceleration BOOLEAN,
+    -- Revenue
+    revenue_quarterly REAL,
+    revenue_growth_quarterly REAL,
+    revenue_growth_annual REAL,
+    -- Margins
+    profit_margin REAL,
+    margin_expanding BOOLEAN,
+    -- Quality score (0-100)
+    fundamental_score INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(ticker, date)
+);
+
+-- VCP pattern detection
+CREATE TABLE IF NOT EXISTS vcp_patterns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    date DATE NOT NULL,
+    -- Pattern metrics
+    num_contractions INTEGER,
+    depth_contraction_1 REAL,
+    depth_contraction_2 REAL,
+    depth_contraction_3 REAL,
+    current_depth REAL,
+    -- Volume
+    volume_dry_up BOOLEAN,
+    volume_ratio REAL,
+    -- Pivot point
+    pivot_price REAL,
+    -- Pattern quality
+    pattern_valid BOOLEAN,
+    pattern_score INTEGER,
+    base_length_days INTEGER,
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(ticker, date)
+);
+
+-- V2 Watchlist for breakout monitoring
+CREATE TABLE IF NOT EXISTS watchlist_v2 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    added_date DATE NOT NULL,
+    -- Entry criteria
+    pivot_price REAL,
+    stop_price REAL,
+    target_price REAL,
+    -- Scores
+    trend_score INTEGER,
+    fundamental_score INTEGER,
+    pattern_score INTEGER,
+    total_score INTEGER,
+    -- Status
+    status TEXT DEFAULT 'WATCHING',  -- WATCHING, TRIGGERED, EXPIRED, STOPPED
+    triggered_date DATE,
+    triggered_price REAL,
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- V2 Paper trading positions
+CREATE TABLE IF NOT EXISTS paper_trades_v2 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    entry_date DATE NOT NULL,
+    entry_price REAL NOT NULL,
+    shares INTEGER NOT NULL,
+    position_value REAL NOT NULL,
+    stop_price REAL NOT NULL,
+    target_price REAL NOT NULL,
+    current_stop REAL,
+    highest_price REAL,
+    -- Exit info
+    exit_date DATE,
+    exit_price REAL,
+    exit_reason TEXT,  -- STOP, TARGET, MANUAL, TIME
+    -- Results
+    return_pct REAL,
+    return_dollars REAL,
+    days_held INTEGER,
+    -- Status
+    status TEXT DEFAULT 'OPEN',  -- OPEN, CLOSED
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- V2 Alert log
+CREATE TABLE IF NOT EXISTS alerts_v2 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    alert_type TEXT NOT NULL,  -- BREAKOUT, STOP_HIT, TARGET_HIT, WATCHLIST_ADD, DAILY_REPORT
+    message TEXT,
+    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    delivered BOOLEAN DEFAULT FALSE
+);
+
+-- Portfolio snapshots for tracking V2 performance
+CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date DATE NOT NULL,
+    cash REAL NOT NULL,
+    positions_value REAL NOT NULL,
+    total_value REAL NOT NULL,
+    daily_pnl REAL,
+    daily_pnl_pct REAL,
+    open_positions INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(date)
+);
+
 -- Indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_insider_trades_ticker_date ON insider_trades(ticker, trade_date);
 CREATE INDEX IF NOT EXISTS idx_insider_trades_filed ON insider_trades(filed_date);
@@ -255,12 +408,23 @@ CREATE INDEX IF NOT EXISTS idx_validation_date ON validation_insider(signal_date
 CREATE INDEX IF NOT EXISTS idx_market_data_ticker_date ON market_data(ticker, date);
 CREATE INDEX IF NOT EXISTS idx_options_flow_ticker_date ON options_flow(ticker, date);
 CREATE INDEX IF NOT EXISTS idx_social_metrics_ticker_date ON social_metrics(ticker, date);
+
+-- V2 Indexes
+CREATE INDEX IF NOT EXISTS idx_trend_template_ticker_date ON trend_template(ticker, date);
+CREATE INDEX IF NOT EXISTS idx_trend_template_compliant ON trend_template(template_compliant, date);
+CREATE INDEX IF NOT EXISTS idx_fundamentals_ticker_date ON fundamentals(ticker, date);
+CREATE INDEX IF NOT EXISTS idx_vcp_patterns_ticker_date ON vcp_patterns(ticker, date);
+CREATE INDEX IF NOT EXISTS idx_vcp_patterns_valid ON vcp_patterns(pattern_valid, date);
+CREATE INDEX IF NOT EXISTS idx_watchlist_v2_status ON watchlist_v2(status);
+CREATE INDEX IF NOT EXISTS idx_paper_trades_v2_status ON paper_trades_v2(status);
+CREATE INDEX IF NOT EXISTS idx_alerts_v2_type ON alerts_v2(alert_type, sent_at);
 """
 
 
 def get_table_counts():
     """Get row counts for all tables (useful for status checks)."""
     tables = [
+        # V1 tables
         "insider_trades",
         "insider_daily",
         "options_flow",
@@ -270,13 +434,24 @@ def get_table_counts():
         "trades",
         "market_context",
         "validation_insider",
+        # V2 tables
+        "trend_template",
+        "fundamentals",
+        "vcp_patterns",
+        "watchlist_v2",
+        "paper_trades_v2",
+        "alerts_v2",
+        "portfolio_snapshots",
     ]
 
     counts = {}
     with get_db() as conn:
         for table in tables:
-            cursor = conn.execute(f"SELECT COUNT(*) FROM {table}")
-            counts[table] = cursor.fetchone()[0]
+            try:
+                cursor = conn.execute(f"SELECT COUNT(*) FROM {table}")
+                counts[table] = cursor.fetchone()[0]
+            except Exception:
+                counts[table] = -1  # Table doesn't exist yet
 
     return counts
 
