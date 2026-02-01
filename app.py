@@ -1026,6 +1026,195 @@ def api_v2_analyze(ticker):
         return jsonify({"error": str(e)}), 400
 
 
+# ============================================================================
+# MEAN REVERSION API ENDPOINTS
+# ============================================================================
+
+@app.route("/api/v2/mr/positions")
+def api_v2_mr_positions():
+    """Get open mean reversion positions."""
+    conn = get_db()
+    cur = conn.cursor()
+    
+    cur.execute("""
+        SELECT * FROM mean_reversion_trades 
+        WHERE status = 'OPEN'
+        ORDER BY entry_date DESC
+    """)
+    
+    positions = []
+    for row in cur.fetchall():
+        positions.append({
+            "id": row["id"],
+            "ticker": row["ticker"],
+            "entry_date": row["entry_date"],
+            "entry_price": row["entry_price"],
+            "shares": row["shares"],
+            "position_value": row["position_value"],
+            "stop_price": row["stop_price"],
+            "target_price": row["target_price"],
+            "status": row["status"],
+        })
+    
+    conn.close()
+    return jsonify({"positions": positions, "count": len(positions)})
+
+
+@app.route("/api/v2/mr/signals")
+def api_v2_mr_signals():
+    """Get recent mean reversion signals."""
+    conn = get_db()
+    cur = conn.cursor()
+    
+    limit = request.args.get('limit', 20, type=int)
+    
+    cur.execute("""
+        SELECT * FROM mean_reversion_signals 
+        WHERE is_signal = 1
+        ORDER BY date DESC, signal_strength DESC
+        LIMIT ?
+    """, (limit,))
+    
+    signals = []
+    for row in cur.fetchall():
+        signals.append({
+            "ticker": row["ticker"],
+            "date": row["date"],
+            "rsi_14": row["rsi_14"],
+            "drop_pct": row["drop_pct"],
+            "current_price": row["current_price"],
+            "suggested_entry": row["suggested_entry"],
+            "suggested_stop": row["suggested_stop"],
+            "suggested_target": row["suggested_target"],
+            "signal_strength": row["signal_strength"],
+            "notes": row["notes"],
+        })
+    
+    conn.close()
+    return jsonify({"signals": signals, "count": len(signals)})
+
+
+@app.route("/api/v2/mr/trades")
+def api_v2_mr_trades():
+    """Get mean reversion trade history."""
+    conn = get_db()
+    cur = conn.cursor()
+    
+    limit = request.args.get('limit', 20, type=int)
+    
+    cur.execute("""
+        SELECT * FROM mean_reversion_trades 
+        WHERE status = 'CLOSED'
+        ORDER BY exit_date DESC
+        LIMIT ?
+    """, (limit,))
+    
+    trades = []
+    for row in cur.fetchall():
+        trades.append({
+            "id": row["id"],
+            "ticker": row["ticker"],
+            "entry_date": row["entry_date"],
+            "entry_price": row["entry_price"],
+            "exit_date": row["exit_date"],
+            "exit_price": row["exit_price"],
+            "return_pct": row["return_pct"],
+            "return_dollars": row["return_dollars"],
+            "days_held": row["days_held"],
+            "exit_reason": row["exit_reason"],
+        })
+    
+    conn.close()
+    return jsonify({"trades": trades, "count": len(trades)})
+
+
+@app.route("/api/v2/mr/performance")
+def api_v2_mr_performance():
+    """Get mean reversion strategy performance stats."""
+    conn = get_db()
+    cur = conn.cursor()
+    
+    # Total trades
+    cur.execute("SELECT COUNT(*) as cnt FROM mean_reversion_trades WHERE status = 'CLOSED'")
+    total_trades = cur.fetchone()["cnt"]
+    
+    # Win rate
+    cur.execute("SELECT COUNT(*) as cnt FROM mean_reversion_trades WHERE status = 'CLOSED' AND return_pct > 0")
+    wins = cur.fetchone()["cnt"]
+    win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
+    
+    # Avg return
+    cur.execute("SELECT AVG(return_pct) as avg_ret, AVG(days_held) as avg_days FROM mean_reversion_trades WHERE status = 'CLOSED'")
+    row = cur.fetchone()
+    avg_return = row["avg_ret"] or 0
+    avg_days = row["avg_days"] or 0
+    
+    # Total P&L
+    cur.execute("SELECT SUM(return_dollars) as total FROM mean_reversion_trades WHERE status = 'CLOSED'")
+    total_pnl = cur.fetchone()["total"] or 0
+    
+    conn.close()
+    
+    return jsonify({
+        "total_trades": total_trades,
+        "wins": wins,
+        "losses": total_trades - wins,
+        "win_rate": win_rate,
+        "avg_return": avg_return,
+        "avg_days_held": avg_days,
+        "total_pnl": total_pnl,
+    })
+
+
+@app.route("/api/v2/combined/portfolio")
+def api_v2_combined_portfolio():
+    """Get combined portfolio view with both strategies."""
+    from utils.paper_trading import PaperTradingEngine
+    
+    conn = get_db()
+    cur = conn.cursor()
+    engine = PaperTradingEngine()
+    
+    # Get momentum positions
+    momentum_status = engine.get_portfolio_status({})
+    
+    # Get mean reversion positions
+    cur.execute("""
+        SELECT * FROM mean_reversion_trades 
+        WHERE status = 'OPEN'
+    """)
+    mr_positions = cur.fetchall()
+    mr_value = sum(row["position_value"] for row in mr_positions)
+    
+    # Get cash from portfolio snapshot
+    cur.execute("SELECT cash FROM portfolio_snapshots ORDER BY date DESC LIMIT 1")
+    cash_row = cur.fetchone()
+    cash = cash_row["cash"] if cash_row else 50000
+    
+    total_value = cash + momentum_status.positions_value + mr_value
+    
+    conn.close()
+    
+    return jsonify({
+        "total_value": total_value,
+        "cash": cash,
+        "momentum": {
+            "positions_value": momentum_status.positions_value,
+            "positions_count": len(momentum_status.open_positions),
+            "max_positions": 4,
+            "allocation_pct": 70,
+        },
+        "mean_reversion": {
+            "positions_value": mr_value,
+            "positions_count": len(mr_positions),
+            "max_positions": 2,
+            "allocation_pct": 30,
+        },
+        "total_positions": len(momentum_status.open_positions) + len(mr_positions),
+        "max_total_positions": 6,
+    })
+
+
 if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 5001))

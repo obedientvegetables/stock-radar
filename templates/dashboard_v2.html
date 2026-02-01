@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stock Radar V2 - Momentum Trading</title>
+    <title>Stock Radar V2 - Dual Strategy</title>
     <style>
         * {
             margin: 0;
@@ -47,6 +47,29 @@
             font-weight: 600;
         }
         
+        .strategy-badges {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+        }
+        
+        .strategy-badge {
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        
+        .strategy-badge.momentum {
+            background: #1d4ed8;
+            color: white;
+        }
+        
+        .strategy-badge.mr {
+            background: #7c3aed;
+            color: white;
+        }
+        
         .last-update {
             color: #71767b;
             font-size: 14px;
@@ -54,9 +77,28 @@
         
         .grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
             gap: 20px;
             margin-bottom: 30px;
+        }
+        
+        .grid-5 {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        @media (max-width: 1200px) {
+            .grid-5 {
+                grid-template-columns: repeat(3, 1fr);
+            }
+        }
+        
+        @media (max-width: 768px) {
+            .grid-5 {
+                grid-template-columns: 1fr;
+            }
         }
         
         .card {
@@ -64,6 +106,14 @@
             border-radius: 16px;
             padding: 20px;
             border: 1px solid #2f3336;
+        }
+        
+        .card.momentum-card {
+            border-left: 4px solid #1d4ed8;
+        }
+        
+        .card.mr-card {
+            border-left: 4px solid #7c3aed;
         }
         
         .card-header {
@@ -99,6 +149,24 @@
             margin-bottom: 15px;
             padding-bottom: 10px;
             border-bottom: 1px solid #2f3336;
+        }
+        
+        .section-title .tag {
+            font-size: 12px;
+            padding: 3px 8px;
+            border-radius: 8px;
+            margin-left: 10px;
+            vertical-align: middle;
+        }
+        
+        .section-title .tag.momentum {
+            background: #1d4ed8;
+            color: white;
+        }
+        
+        .section-title .tag.mr {
+            background: #7c3aed;
+            color: white;
         }
         
         table {
@@ -143,6 +211,8 @@
         .badge-closed { background: #374151; color: #9ca3af; }
         .badge-win { background: #065f46; color: #34d399; }
         .badge-loss { background: #7f1d1d; color: #fca5a5; }
+        .badge-momentum { background: #1d4ed8; color: white; }
+        .badge-mr { background: #7c3aed; color: white; }
         
         .progress-bar {
             height: 8px;
@@ -154,14 +224,27 @@
         
         .progress-fill {
             height: 100%;
-            background: linear-gradient(90deg, #1d9bf0, #00ba7c);
             border-radius: 4px;
+        }
+        
+        .progress-fill.momentum {
+            background: linear-gradient(90deg, #1d4ed8, #3b82f6);
+        }
+        
+        .progress-fill.mr {
+            background: linear-gradient(90deg, #7c3aed, #a78bfa);
         }
         
         .stats-grid {
             display: grid;
-            grid-template-columns: repeat(2, 1fr);
+            grid-template-columns: repeat(4, 1fr);
             gap: 15px;
+        }
+        
+        @media (max-width: 768px) {
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
         }
         
         .stat-item {
@@ -193,6 +276,8 @@
         .alert-item.breakout { border-left-color: #00ba7c; }
         .alert-item.stop { border-left-color: #f4212e; }
         .alert-item.target { border-left-color: #fbbf24; }
+        .alert-item.mr_entry { border-left-color: #7c3aed; }
+        .alert-item.mr_exit { border-left-color: #a78bfa; }
         
         .alert-header {
             display: flex;
@@ -236,14 +321,91 @@
             color: #71767b;
         }
         
-        @media (max-width: 768px) {
-            .grid {
+        .allocation-bar {
+            display: flex;
+            height: 24px;
+            border-radius: 8px;
+            overflow: hidden;
+            background: #2f3336;
+            margin-top: 10px;
+        }
+        
+        .allocation-segment {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            font-weight: 600;
+            color: white;
+        }
+        
+        .allocation-segment.momentum {
+            background: #1d4ed8;
+        }
+        
+        .allocation-segment.mr {
+            background: #7c3aed;
+        }
+        
+        .allocation-segment.cash {
+            background: #374151;
+        }
+        
+        .two-col {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        
+        @media (max-width: 1000px) {
+            .two-col {
                 grid-template-columns: 1fr;
             }
-            
-            .card-value {
-                font-size: 24px;
-            }
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 30px;
+            color: #71767b;
+        }
+        
+        .signal-card {
+            background: #1e2328;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 10px;
+            border-left: 4px solid #7c3aed;
+        }
+        
+        .signal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        
+        .signal-ticker {
+            font-size: 18px;
+            font-weight: 700;
+            color: #7c3aed;
+        }
+        
+        .signal-grade {
+            padding: 4px 10px;
+            border-radius: 8px;
+            font-weight: 700;
+            font-size: 14px;
+        }
+        
+        .signal-grade.A { background: #065f46; color: #34d399; }
+        .signal-grade.B { background: #1d4ed8; color: #93c5fd; }
+        .signal-grade.C { background: #78350f; color: #fcd34d; }
+        
+        .signal-stats {
+            display: flex;
+            gap: 20px;
+            font-size: 13px;
+            color: #9ca3af;
         }
     </style>
 </head>
@@ -252,7 +414,10 @@
         <header>
             <div>
                 <h1>Stock Radar <span class="version-badge">V2</span></h1>
-                <p class="last-update">Minervini Momentum System</p>
+                <div class="strategy-badges">
+                    <span class="strategy-badge momentum">📈 Momentum 70%</span>
+                    <span class="strategy-badge mr">🔄 Mean Reversion 30%</span>
+                </div>
             </div>
             <div>
                 <span class="last-update" id="lastUpdate">Loading...</span>
@@ -261,13 +426,13 @@
         </header>
         
         <!-- Portfolio Summary -->
-        <div class="grid">
+        <div class="grid-5">
             <div class="card">
                 <div class="card-header">
                     <span class="card-title">Portfolio Value</span>
                 </div>
                 <div class="card-value" id="portfolioValue">$0.00</div>
-                <div class="card-subtitle">Starting: $50,000.00</div>
+                <div class="card-subtitle">Starting: $50,000</div>
             </div>
             
             <div class="card">
@@ -280,27 +445,121 @@
             
             <div class="card">
                 <div class="card-header">
-                    <span class="card-title">Open Positions</span>
-                </div>
-                <div class="card-value" id="openPositions">0</div>
-                <div class="card-subtitle">Max: 6 positions</div>
-                <div class="progress-bar">
-                    <div class="progress-fill" id="positionProgress" style="width: 0%"></div>
-                </div>
-            </div>
-            
-            <div class="card">
-                <div class="card-header">
                     <span class="card-title">Cash Available</span>
                 </div>
                 <div class="card-value" id="cashAvailable">$0.00</div>
-                <div class="card-subtitle" id="cashPct">0% of portfolio</div>
+                <div class="card-subtitle" id="cashPct">0%</div>
+            </div>
+            
+            <div class="card momentum-card">
+                <div class="card-header">
+                    <span class="card-title">Momentum Positions</span>
+                </div>
+                <div class="card-value" id="momentumCount">0/4</div>
+                <div class="progress-bar">
+                    <div class="progress-fill momentum" id="momentumProgress" style="width: 0%"></div>
+                </div>
+            </div>
+            
+            <div class="card mr-card">
+                <div class="card-header">
+                    <span class="card-title">Mean Reversion</span>
+                </div>
+                <div class="card-value" id="mrCount">0/2</div>
+                <div class="progress-bar">
+                    <div class="progress-fill mr" id="mrProgress" style="width: 0%"></div>
+                </div>
             </div>
         </div>
         
-        <!-- Performance Stats -->
+        <!-- Allocation Bar -->
         <div class="card" style="margin-bottom: 30px;">
-            <h2 class="section-title">📊 Performance Stats</h2>
+            <h2 class="section-title">💰 Capital Allocation</h2>
+            <div class="allocation-bar" id="allocationBar">
+                <div class="allocation-segment momentum" style="width: 0%">Momentum</div>
+                <div class="allocation-segment mr" style="width: 0%">Mean Rev</div>
+                <div class="allocation-segment cash" style="width: 100%">Cash</div>
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-top: 10px; font-size: 13px; color: #71767b;">
+                <span id="momentumAlloc">Momentum: $0</span>
+                <span id="mrAlloc">Mean Reversion: $0</span>
+                <span id="cashAlloc">Cash: $50,000</span>
+            </div>
+        </div>
+        
+        <!-- Two Column Layout: Momentum + Mean Reversion Positions -->
+        <div class="two-col" style="margin-bottom: 30px;">
+            <!-- Momentum Positions -->
+            <div class="card momentum-card">
+                <h2 class="section-title">📈 Momentum Positions <span class="tag momentum">SEPA</span></h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Ticker</th>
+                            <th>Entry</th>
+                            <th>Current</th>
+                            <th>P&L</th>
+                            <th>Stop</th>
+                        </tr>
+                    </thead>
+                    <tbody id="momentumPositionsTable">
+                        <tr><td colspan="5" class="loading">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            
+            <!-- Mean Reversion Positions -->
+            <div class="card mr-card">
+                <h2 class="section-title">🔄 Mean Reversion Positions <span class="tag mr">Oversold</span></h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Ticker</th>
+                            <th>Entry</th>
+                            <th>Current</th>
+                            <th>P&L</th>
+                            <th>Days</th>
+                        </tr>
+                    </thead>
+                    <tbody id="mrPositionsTable">
+                        <tr><td colspan="5" class="loading">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Two Column: Watchlist + MR Signals -->
+        <div class="two-col" style="margin-bottom: 30px;">
+            <!-- Momentum Watchlist -->
+            <div class="card momentum-card">
+                <h2 class="section-title">👁️ Momentum Watchlist <span class="tag momentum">Trend Template</span></h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Ticker</th>
+                            <th>RS</th>
+                            <th>Price</th>
+                            <th>From High</th>
+                        </tr>
+                    </thead>
+                    <tbody id="watchlistTable">
+                        <tr><td colspan="4" class="loading">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            
+            <!-- Mean Reversion Signals -->
+            <div class="card mr-card">
+                <h2 class="section-title">🎯 Mean Reversion Signals <span class="tag mr">RSI &lt; 30</span></h2>
+                <div id="mrSignalsContainer">
+                    <div class="loading">Loading signals...</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Performance Stats (Combined) -->
+        <div class="card" style="margin-bottom: 30px;">
+            <h2 class="section-title">📊 Combined Performance</h2>
             <div class="stats-grid">
                 <div class="stat-item">
                     <div class="stat-label">Total Trades</div>
@@ -321,49 +580,6 @@
             </div>
         </div>
         
-        <!-- Open Positions -->
-        <div class="card" style="margin-bottom: 30px;">
-            <h2 class="section-title">📈 Open Positions</h2>
-            <div id="positionsContainer">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Ticker</th>
-                            <th>Shares</th>
-                            <th>Entry</th>
-                            <th>Current</th>
-                            <th>P&L</th>
-                            <th>Stop</th>
-                            <th>Target</th>
-                            <th>Days</th>
-                        </tr>
-                    </thead>
-                    <tbody id="positionsTable">
-                        <tr><td colspan="8" class="loading">Loading positions...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        
-        <!-- Watchlist -->
-        <div class="card" style="margin-bottom: 30px;">
-            <h2 class="section-title">👁️ Watchlist (Trend Template Passing)</h2>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Ticker</th>
-                        <th>RS Rating</th>
-                        <th>Price</th>
-                        <th>From High</th>
-                        <th>Criteria</th>
-                    </tr>
-                </thead>
-                <tbody id="watchlistTable">
-                    <tr><td colspan="5" class="loading">Loading watchlist...</td></tr>
-                </tbody>
-            </table>
-        </div>
-        
         <!-- Recent Alerts -->
         <div class="card" style="margin-bottom: 30px;">
             <h2 class="section-title">🔔 Recent Alerts</h2>
@@ -374,16 +590,16 @@
         
         <!-- Trade History -->
         <div class="card">
-            <h2 class="section-title">📜 Recent Trades</h2>
+            <h2 class="section-title">📜 Trade History</h2>
             <table>
                 <thead>
                     <tr>
                         <th>Date</th>
+                        <th>Strategy</th>
                         <th>Ticker</th>
                         <th>Entry</th>
                         <th>Exit</th>
                         <th>Return</th>
-                        <th>Days</th>
                         <th>Reason</th>
                     </tr>
                 </thead>
@@ -411,12 +627,12 @@
             return new Intl.NumberFormat('en-US', {
                 style: 'currency',
                 currency: 'USD',
-            }).format(value);
+            }).format(value || 0);
         }
         
         function formatPercent(value) {
             const sign = value >= 0 ? '+' : '';
-            return sign + value.toFixed(2) + '%';
+            return sign + (value || 0).toFixed(2) + '%';
         }
         
         function getPnlClass(value) {
@@ -424,53 +640,105 @@
         }
         
         async function loadPortfolio() {
-            const data = await fetchData('/portfolio');
-            if (!data) return;
+            // Load momentum portfolio
+            const momentum = await fetchData('/portfolio');
             
-            document.getElementById('portfolioValue').textContent = formatCurrency(data.total_value);
+            // Load mean reversion positions
+            const mr = await fetchData('/mr/positions');
             
-            const pnlEl = document.getElementById('totalPnl');
-            pnlEl.textContent = formatCurrency(data.total_pnl);
-            pnlEl.className = 'card-value ' + getPnlClass(data.total_pnl);
+            // Load combined view
+            const combined = await fetchData('/combined/portfolio');
             
-            document.getElementById('totalPnlPct').textContent = formatPercent(data.total_pnl_pct);
-            document.getElementById('openPositions').textContent = data.positions.length;
-            document.getElementById('positionProgress').style.width = (data.positions.length / 6 * 100) + '%';
-            document.getElementById('cashAvailable').textContent = formatCurrency(data.cash);
-            document.getElementById('cashPct').textContent = ((data.cash / data.total_value) * 100).toFixed(0) + '% of portfolio';
+            if (combined) {
+                document.getElementById('portfolioValue').textContent = formatCurrency(combined.total_value);
+                document.getElementById('cashAvailable').textContent = formatCurrency(combined.cash);
+                document.getElementById('cashPct').textContent = ((combined.cash / combined.total_value) * 100).toFixed(0) + '% of portfolio';
+                
+                document.getElementById('momentumCount').textContent = `${combined.momentum.positions_count}/${combined.momentum.max_positions}`;
+                document.getElementById('momentumProgress').style.width = (combined.momentum.positions_count / combined.momentum.max_positions * 100) + '%';
+                
+                document.getElementById('mrCount').textContent = `${combined.mean_reversion.positions_count}/${combined.mean_reversion.max_positions}`;
+                document.getElementById('mrProgress').style.width = (combined.mean_reversion.positions_count / combined.mean_reversion.max_positions * 100) + '%';
+                
+                // Allocation bar
+                const total = combined.total_value;
+                const momPct = (combined.momentum.positions_value / total * 100);
+                const mrPct = (combined.mean_reversion.positions_value / total * 100);
+                const cashPct = (combined.cash / total * 100);
+                
+                const bar = document.getElementById('allocationBar');
+                bar.innerHTML = `
+                    <div class="allocation-segment momentum" style="width: ${momPct}%">${momPct > 10 ? 'Momentum' : ''}</div>
+                    <div class="allocation-segment mr" style="width: ${mrPct}%">${mrPct > 10 ? 'Mean Rev' : ''}</div>
+                    <div class="allocation-segment cash" style="width: ${cashPct}%">${cashPct > 10 ? 'Cash' : ''}</div>
+                `;
+                
+                document.getElementById('momentumAlloc').textContent = `Momentum: ${formatCurrency(combined.momentum.positions_value)}`;
+                document.getElementById('mrAlloc').textContent = `Mean Rev: ${formatCurrency(combined.mean_reversion.positions_value)}`;
+                document.getElementById('cashAlloc').textContent = `Cash: ${formatCurrency(combined.cash)}`;
+            }
             
-            // Positions table
-            const positionsHtml = data.positions.length > 0 
-                ? data.positions.map(p => {
-                    const currentPrice = p.current_price || p.entry_price;
-                    const pnlPct = ((currentPrice - p.entry_price) / p.entry_price) * 100;
-                    const daysHeld = Math.floor((new Date() - new Date(p.entry_date)) / (1000 * 60 * 60 * 24));
-                    return `
-                        <tr>
-                            <td class="ticker">${p.ticker}</td>
-                            <td>${p.shares}</td>
-                            <td>${formatCurrency(p.entry_price)}</td>
-                            <td>${formatCurrency(currentPrice)}</td>
-                            <td class="${getPnlClass(pnlPct)}">${formatPercent(pnlPct)}</td>
-                            <td>${formatCurrency(p.stop)}</td>
-                            <td>${formatCurrency(p.target)}</td>
-                            <td>${daysHeld}</td>
-                        </tr>
-                    `;
-                }).join('')
-                : '<tr><td colspan="8" style="text-align:center; color:#71767b;">No open positions</td></tr>';
+            if (momentum) {
+                const pnlEl = document.getElementById('totalPnl');
+                pnlEl.textContent = formatCurrency(momentum.total_pnl);
+                pnlEl.className = 'card-value ' + getPnlClass(momentum.total_pnl);
+                document.getElementById('totalPnlPct').textContent = formatPercent(momentum.total_pnl_pct);
+                
+                // Momentum positions table
+                const momHtml = momentum.positions.length > 0 
+                    ? momentum.positions.map(p => {
+                        const currentPrice = p.current_price || p.entry_price;
+                        const pnlPct = ((currentPrice - p.entry_price) / p.entry_price) * 100;
+                        return `
+                            <tr>
+                                <td class="ticker">${p.ticker}</td>
+                                <td>${formatCurrency(p.entry_price)}</td>
+                                <td>${formatCurrency(currentPrice)}</td>
+                                <td class="${getPnlClass(pnlPct)}">${formatPercent(pnlPct)}</td>
+                                <td>${formatCurrency(p.stop)}</td>
+                            </tr>
+                        `;
+                    }).join('')
+                    : '<tr><td colspan="5" class="empty-state">No momentum positions</td></tr>';
+                
+                document.getElementById('momentumPositionsTable').innerHTML = momHtml;
+            }
             
-            document.getElementById('positionsTable').innerHTML = positionsHtml;
+            if (mr) {
+                // Mean reversion positions table
+                const mrHtml = mr.positions.length > 0 
+                    ? mr.positions.map(p => {
+                        const daysHeld = Math.floor((new Date() - new Date(p.entry_date)) / (1000 * 60 * 60 * 24));
+                        const pnlPct = 0; // Would need current price
+                        return `
+                            <tr>
+                                <td class="ticker">${p.ticker}</td>
+                                <td>${formatCurrency(p.entry_price)}</td>
+                                <td>-</td>
+                                <td>-</td>
+                                <td>${daysHeld}/5</td>
+                            </tr>
+                        `;
+                    }).join('')
+                    : '<tr><td colspan="5" class="empty-state">No mean reversion positions</td></tr>';
+                
+                document.getElementById('mrPositionsTable').innerHTML = mrHtml;
+            }
         }
         
         async function loadPerformance() {
-            const data = await fetchData('/performance');
-            if (!data) return;
+            const momentum = await fetchData('/performance');
+            const mr = await fetchData('/mr/performance');
             
-            document.getElementById('totalTrades').textContent = data.total_trades || 0;
-            document.getElementById('winRate').textContent = (data.win_rate || 0).toFixed(1) + '%';
-            document.getElementById('profitFactor').textContent = (data.profit_factor || 0).toFixed(2);
-            document.getElementById('avgDaysHeld').textContent = (data.avg_days_held || 0).toFixed(1);
+            // Combine stats
+            const totalTrades = (momentum?.total_trades || 0) + (mr?.total_trades || 0);
+            const totalWins = (momentum?.wins || 0) + (mr?.wins || 0);
+            const winRate = totalTrades > 0 ? (totalWins / totalTrades * 100) : 0;
+            
+            document.getElementById('totalTrades').textContent = totalTrades;
+            document.getElementById('winRate').textContent = winRate.toFixed(1) + '%';
+            document.getElementById('profitFactor').textContent = (momentum?.profit_factor || 0).toFixed(2);
+            document.getElementById('avgDaysHeld').textContent = (momentum?.avg_days_held || 0).toFixed(1);
         }
         
         async function loadWatchlist() {
@@ -478,18 +746,42 @@
             if (!data || !data.stocks) return;
             
             const html = data.stocks.length > 0
-                ? data.stocks.slice(0, 15).map(s => `
+                ? data.stocks.slice(0, 10).map(s => `
                     <tr>
                         <td class="ticker">${s.ticker}</td>
                         <td>${(s.rs_rating || 0).toFixed(1)}</td>
                         <td>${formatCurrency(s.price)}</td>
                         <td>${(s.distance_from_high_pct || 0).toFixed(1)}%</td>
-                        <td>${s.criteria_passed || 8}/8</td>
                     </tr>
                 `).join('')
-                : '<tr><td colspan="5" style="text-align:center; color:#71767b;">No stocks on watchlist</td></tr>';
+                : '<tr><td colspan="4" class="empty-state">No stocks on watchlist</td></tr>';
             
             document.getElementById('watchlistTable').innerHTML = html;
+        }
+        
+        async function loadMRSignals() {
+            const data = await fetchData('/mr/signals?limit=5');
+            
+            const html = data && data.signals && data.signals.length > 0
+                ? data.signals.map(s => {
+                    const grade = s.signal_strength >= 80 ? 'A' : s.signal_strength >= 60 ? 'B' : 'C';
+                    return `
+                        <div class="signal-card">
+                            <div class="signal-header">
+                                <span class="signal-ticker">${s.ticker}</span>
+                                <span class="signal-grade ${grade}">Grade ${grade}</span>
+                            </div>
+                            <div class="signal-stats">
+                                <span>RSI: ${(s.rsi_14 || 0).toFixed(1)}</span>
+                                <span>Drop: ${(s.drop_pct || 0).toFixed(1)}%</span>
+                                <span>Entry: ${formatCurrency(s.suggested_entry)}</span>
+                            </div>
+                        </div>
+                    `;
+                }).join('')
+                : '<div class="empty-state">No oversold signals currently<br><small>Triggers when RSI &lt; 30 AND 8%+ drop in 3 days</small></div>';
+            
+            document.getElementById('mrSignalsContainer').innerHTML = html;
         }
         
         async function loadAlerts() {
@@ -498,9 +790,12 @@
             
             const html = data.alerts.length > 0
                 ? data.alerts.map(a => {
-                    const typeClass = a.alert_type.includes('STOP') ? 'stop' 
-                        : a.alert_type.includes('TARGET') ? 'target'
-                        : a.alert_type.includes('BREAKOUT') ? 'breakout' : '';
+                    const type = a.alert_type.toLowerCase();
+                    const typeClass = type.includes('stop') ? 'stop' 
+                        : type.includes('target') ? 'target'
+                        : type.includes('breakout') ? 'breakout'
+                        : type.includes('mr_entry') ? 'mr_entry'
+                        : type.includes('mr_exit') ? 'mr_exit' : '';
                     return `
                         <div class="alert-item ${typeClass}">
                             <div class="alert-header">
@@ -510,28 +805,42 @@
                         </div>
                     `;
                 }).join('')
-                : '<div style="text-align:center; color:#71767b; padding:20px;">No recent alerts</div>';
+                : '<div class="empty-state">No recent alerts</div>';
             
             document.getElementById('alertsContainer').innerHTML = html;
         }
         
         async function loadTrades() {
-            const data = await fetchData('/trades?limit=10');
-            if (!data || !data.trades) return;
+            // Load both momentum and MR trades
+            const momentum = await fetchData('/trades?limit=10');
+            const mr = await fetchData('/mr/trades?limit=10');
             
-            const html = data.trades.length > 0
-                ? data.trades.map(t => `
+            let allTrades = [];
+            
+            if (momentum && momentum.trades) {
+                allTrades = allTrades.concat(momentum.trades.map(t => ({...t, strategy: 'Momentum'})));
+            }
+            
+            if (mr && mr.trades) {
+                allTrades = allTrades.concat(mr.trades.map(t => ({...t, strategy: 'Mean Rev'})));
+            }
+            
+            // Sort by date
+            allTrades.sort((a, b) => new Date(b.exit_date) - new Date(a.exit_date));
+            
+            const html = allTrades.length > 0
+                ? allTrades.slice(0, 15).map(t => `
                     <tr>
                         <td>${t.exit_date}</td>
+                        <td><span class="badge ${t.strategy === 'Momentum' ? 'badge-momentum' : 'badge-mr'}">${t.strategy}</span></td>
                         <td class="ticker">${t.ticker}</td>
                         <td>${formatCurrency(t.entry_price)}</td>
                         <td>${formatCurrency(t.exit_price)}</td>
                         <td class="${getPnlClass(t.return_pct)}">${formatPercent(t.return_pct)}</td>
-                        <td>${t.days_held}</td>
                         <td><span class="badge ${t.return_pct >= 0 ? 'badge-win' : 'badge-loss'}">${t.exit_reason}</span></td>
                     </tr>
                 `).join('')
-                : '<tr><td colspan="7" style="text-align:center; color:#71767b;">No closed trades yet</td></tr>';
+                : '<tr><td colspan="7" class="empty-state">No closed trades yet</td></tr>';
             
             document.getElementById('tradesTable').innerHTML = html;
         }
@@ -543,6 +852,7 @@
                 loadPortfolio(),
                 loadPerformance(),
                 loadWatchlist(),
+                loadMRSignals(),
                 loadAlerts(),
                 loadTrades(),
             ]);
