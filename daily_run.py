@@ -1938,5 +1938,198 @@ def v2_evening(email):
     click.echo(f"Open Positions: {len(status.open_positions)}")
 
 
+# ============================================================================
+# MEAN REVERSION COMMANDS
+# ============================================================================
+
+@cli.command("mr-scan")
+@click.option("--limit", "-l", default=70, help="Number of stocks to scan")
+def mr_scan(limit):
+    """Scan for mean reversion (oversold) setups."""
+    from signals.mean_reversion import scan_for_mean_reversion, get_large_cap_universe
+    
+    click.echo("=" * 50)
+    click.echo("MEAN REVERSION SCANNER")
+    click.echo(f"{date.today()}")
+    click.echo("=" * 50)
+    click.echo()
+    
+    tickers = get_large_cap_universe()[:limit]
+    click.echo(f"Scanning {len(tickers)} large cap stocks for oversold bounces...")
+    click.echo()
+    
+    signals = scan_for_mean_reversion(tickers, save_to_db=True)
+    
+    click.echo()
+    click.echo("=" * 50)
+    click.echo(f"Found {len(signals)} mean reversion signals")
+    click.echo("=" * 50)
+    
+    if signals:
+        click.echo()
+        for s in signals[:10]:
+            click.echo(f"{s.ticker:<6} RSI: {s.rsi_14:>5.1f}  Drop: {s.drop_pct:>6.1f}%  "
+                      f"Grade: {s.signal_grade}  Entry: ${s.suggested_entry:.2f}")
+
+
+@cli.command("mr-check")
+@click.argument("ticker")
+def mr_check(ticker):
+    """Check a single stock for mean reversion signal."""
+    from signals.mean_reversion import check_mean_reversion
+    
+    ticker = ticker.upper()
+    click.echo(f"Checking {ticker} for mean reversion signal...")
+    click.echo()
+    
+    signal = check_mean_reversion(ticker)
+    
+    click.echo(f"Ticker: {signal.ticker}")
+    click.echo(f"Date: {signal.date}")
+    click.echo()
+    
+    click.echo("Price Action:")
+    click.echo(f"  Current: ${signal.current_price:.2f}")
+    click.echo(f"  3d Ago:  ${signal.price_3d_ago:.2f}")
+    click.echo(f"  Drop:    {signal.drop_pct:+.1f}%")
+    click.echo()
+    
+    click.echo("Technical:")
+    click.echo(f"  RSI(14): {signal.rsi_14:.1f} {'✓ OVERSOLD' if signal.rsi_oversold else ''}")
+    click.echo()
+    
+    click.echo("Quality:")
+    click.echo(f"  Market Cap: ${signal.market_cap/1e9:.1f}B")
+    click.echo(f"  Profitable: {'Yes' if signal.is_profitable else 'No'}")
+    click.echo(f"  Passes Quality: {'Yes' if signal.passes_quality else 'No'}")
+    click.echo()
+    
+    click.echo("Earnings:")
+    if signal.days_to_earnings:
+        click.echo(f"  Days to earnings: {signal.days_to_earnings}")
+    click.echo(f"  Safe to trade: {'Yes' if signal.earnings_safe else 'No'}")
+    click.echo()
+    
+    if signal.is_signal:
+        click.echo("=" * 40)
+        click.echo(f"✓ MEAN REVERSION SIGNAL - Grade {signal.signal_grade}")
+        click.echo("=" * 40)
+        click.echo(f"  Entry:  ${signal.suggested_entry:.2f}")
+        click.echo(f"  Stop:   ${signal.suggested_stop:.2f} (-5%)")
+        click.echo(f"  Target: ${signal.suggested_target:.2f} (+5%)")
+    else:
+        click.echo(f"No signal: {signal.notes}")
+
+
+@cli.command("mr-positions")
+def mr_positions():
+    """Show open mean reversion positions."""
+    from utils.db import get_db
+    
+    click.echo("=" * 50)
+    click.echo("MEAN REVERSION POSITIONS")
+    click.echo("=" * 50)
+    click.echo()
+    
+    with get_db() as conn:
+        cursor = conn.execute("""
+            SELECT * FROM mean_reversion_trades 
+            WHERE status = 'OPEN'
+            ORDER BY entry_date DESC
+        """)
+        positions = cursor.fetchall()
+    
+    if not positions:
+        click.echo("No open mean reversion positions")
+        return
+    
+    for pos in positions:
+        days_held = (date.today() - date.fromisoformat(pos['entry_date'])).days
+        click.echo(f"{pos['ticker']}")
+        click.echo(f"  Entry: ${pos['entry_price']:.2f} on {pos['entry_date']}")
+        click.echo(f"  Shares: {pos['shares']}")
+        click.echo(f"  Stop: ${pos['stop_price']:.2f} | Target: ${pos['target_price']:.2f}")
+        click.echo(f"  Days held: {days_held}/5")
+        click.echo()
+
+
+@cli.command("mr-history")
+@click.option("--limit", "-l", default=20, help="Number of trades to show")
+def mr_history(limit):
+    """Show mean reversion trade history."""
+    from utils.db import get_db
+    
+    click.echo("=" * 50)
+    click.echo("MEAN REVERSION TRADE HISTORY")
+    click.echo("=" * 50)
+    click.echo()
+    
+    with get_db() as conn:
+        cursor = conn.execute("""
+            SELECT * FROM mean_reversion_trades 
+            WHERE status = 'CLOSED'
+            ORDER BY exit_date DESC
+            LIMIT ?
+        """, (limit,))
+        trades = cursor.fetchall()
+    
+    if not trades:
+        click.echo("No closed mean reversion trades")
+        return
+    
+    total_pnl = 0
+    wins = 0
+    
+    for t in trades:
+        total_pnl += t['return_dollars'] or 0
+        if (t['return_pct'] or 0) > 0:
+            wins += 1
+        
+        emoji = "✓" if (t['return_pct'] or 0) > 0 else "✗"
+        click.echo(f"{emoji} {t['ticker']}: {t['return_pct']:+.1f}% "
+                  f"(${t['return_dollars']:+.2f}) - {t['exit_reason']} "
+                  f"[{t['days_held']}d]")
+    
+    click.echo()
+    click.echo(f"Total: {len(trades)} trades")
+    click.echo(f"Win Rate: {wins/len(trades)*100:.0f}%")
+    click.echo(f"Net P&L: ${total_pnl:+.2f}")
+
+
+@cli.command("v2-combined")
+@click.option("--email/--no-email", default=True, help="Send email alerts")
+def v2_combined(email):
+    """Run both momentum and mean reversion checks."""
+    from signals.auto_trader import AutoTrader
+    
+    click.echo("=" * 50)
+    click.echo("V2 COMBINED CHECK - MOMENTUM + MEAN REVERSION")
+    click.echo(f"{datetime.now()}")
+    click.echo("=" * 50)
+    
+    trader = AutoTrader()
+    
+    # Run momentum check
+    click.echo()
+    click.echo("MOMENTUM STRATEGY (70%)")
+    click.echo("-" * 50)
+    momentum_results = trader.run_breakout_check(send_emails=email)
+    
+    # Run mean reversion check
+    click.echo()
+    click.echo("MEAN REVERSION STRATEGY (30%)")
+    click.echo("-" * 50)
+    mr_results = trader.run_mean_reversion_check(send_emails=email)
+    
+    click.echo()
+    click.echo("=" * 50)
+    click.echo("SUMMARY")
+    click.echo("=" * 50)
+    click.echo(f"Momentum breakouts: {len(momentum_results.get('breakouts_found', []))}")
+    click.echo(f"Momentum entries: {len(momentum_results.get('trades_entered', []))}")
+    click.echo(f"Mean reversion signals: {len(mr_results.get('signals_found', []))}")
+    click.echo(f"Mean reversion entries: {len(mr_results.get('trades_entered', []))}")
+
+
 if __name__ == "__main__":
     cli()

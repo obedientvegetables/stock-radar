@@ -1,10 +1,15 @@
 """
 Auto Trader - Automated Paper Trading Execution
 
+Runs TWO strategies simultaneously:
+1. MOMENTUM (70% allocation) - Minervini breakouts
+2. MEAN REVERSION (30% allocation) - Oversold bounces
+
 Automatically enters and manages paper trades based on:
-1. Breakout signals with volume confirmation
-2. Risk management rules (position sizing, max positions)
-3. Stop/target management
+1. Breakout signals with volume confirmation (momentum)
+2. RSI oversold + price drop signals (mean reversion)
+3. Risk management rules (position sizing, max positions)
+4. Stop/target management
 
 This is the "brain" that makes trading decisions without manual intervention.
 """
@@ -22,6 +27,13 @@ from utils.paper_trading import PaperTradingEngine
 from signals.trend_template import get_compliant_stocks, check_trend_template
 from signals.vcp_detector import detect_vcp
 from signals.breakout import check_breakout
+from signals.mean_reversion import (
+    scan_for_mean_reversion, 
+    check_mean_reversion,
+    check_mean_reversion_exit,
+    get_large_cap_universe,
+    save_mean_reversion_signal,
+)
 from collectors.earnings import is_earnings_safe
 from output.alerts import (
     send_alert, 
@@ -30,6 +42,14 @@ from output.alerts import (
     format_target_hit_alert,
     format_watchlist_alert,
 )
+
+# Strategy allocation
+MOMENTUM_ALLOCATION = 0.70  # 70% of portfolio
+MEAN_REVERSION_ALLOCATION = 0.30  # 30% of portfolio
+
+# Max positions per strategy
+MAX_MOMENTUM_POSITIONS = 4  # Out of 6 total
+MAX_MEAN_REVERSION_POSITIONS = 2  # Out of 6 total
 
 
 class AutoTrader:
@@ -236,6 +256,293 @@ class AutoTrader:
         print()
         print(f"Breakouts: {len(results['breakouts_found'])}")
         print(f"Trades entered: {len(results['trades_entered'])}")
+        
+        return results
+    
+    def run_mean_reversion_check(self, send_emails: bool = True) -> Dict:
+        """
+        Check for mean reversion setups and auto-enter trades.
+        
+        Run alongside breakout check during market hours.
+        Looks for oversold quality stocks to buy for a bounce.
+        """
+        results = {
+            'check_time': datetime.now().isoformat(),
+            'signals_found': [],
+            'trades_entered': [],
+            'skipped': [],
+            'errors': [],
+        }
+        
+        print()
+        print("=" * 50)
+        print("AUTO TRADER - MEAN REVERSION CHECK")
+        print(f"{datetime.now()}")
+        print("=" * 50)
+        
+        # Get current portfolio status
+        status = self.engine.get_portfolio_status()
+        
+        # Count mean reversion positions
+        mr_positions = self._count_mean_reversion_positions()
+        open_tickers = [p.ticker for p in status.open_positions]
+        
+        print(f"Mean reversion positions: {mr_positions}/{MAX_MEAN_REVERSION_POSITIONS}")
+        print(f"Available cash: ${status.cash:,.2f}")
+        
+        if mr_positions >= MAX_MEAN_REVERSION_POSITIONS:
+            print("Max mean reversion positions reached - skipping")
+            return results
+        
+        # Check for mean reversion exits first
+        self._check_mean_reversion_exits(send_emails)
+        
+        # Scan for new setups
+        print("\nScanning for oversold stocks...")
+        universe = get_large_cap_universe()
+        
+        for ticker in universe:
+            if ticker in open_tickers:
+                continue
+                
+            try:
+                signal = check_mean_reversion(ticker)
+                
+                if signal.is_signal and signal.signal_strength in ['A', 'B']:
+                    print(f"  📉 OVERSOLD: {ticker} - RSI={signal.rsi_14}, Drop={signal.drop_pct}%, Grade={signal.signal_strength}")
+                    
+                    results['signals_found'].append({
+                        'ticker': ticker,
+                        'price': signal.current_price,
+                        'rsi': signal.rsi_14,
+                        'drop_pct': signal.drop_pct,
+                        'strength': signal.signal_strength,
+                    })
+                    
+                    # Save signal to database
+                    save_mean_reversion_signal(signal)
+                    
+                    # Check if we should enter
+                    should_enter, reason = self._should_enter_mean_reversion(ticker, signal, status, mr_positions)
+                    
+                    if should_enter:
+                        trade_result = self._enter_mean_reversion_trade(ticker, signal, send_emails)
+                        if trade_result:
+                            results['trades_entered'].append(trade_result)
+                            mr_positions += 1
+                    else:
+                        results['skipped'].append({
+                            'ticker': ticker,
+                            'reason': reason,
+                        })
+                        print(f"    Skipped: {reason}")
+                        
+            except Exception as e:
+                results['errors'].append(f"{ticker}: {str(e)[:50]}")
+        
+        print()
+        print(f"Oversold signals: {len(results['signals_found'])}")
+        print(f"Mean reversion trades entered: {len(results['trades_entered'])}")
+        
+        return results
+    
+    def _count_mean_reversion_positions(self) -> int:
+        """Count open mean reversion positions."""
+        with get_db() as conn:
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM mean_reversion_trades WHERE status = 'OPEN'"
+            )
+            return cursor.fetchone()[0]
+    
+    def _check_mean_reversion_exits(self, send_emails: bool):
+        """Check mean reversion positions for exit conditions."""
+        with get_db() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM mean_reversion_trades WHERE status = 'OPEN'"
+            )
+            positions = cursor.fetchall()
+            
+            for pos in positions:
+                ticker = pos['ticker']
+                entry_price = pos['entry_price']
+                entry_date = date.fromisoformat(pos['entry_date'])
+                
+                should_exit, reason, current_price = check_mean_reversion_exit(
+                    ticker, entry_price, entry_date
+                )
+                
+                if should_exit and current_price > 0:
+                    # Exit the trade
+                    return_pct = ((current_price - entry_price) / entry_price) * 100
+                    return_dollars = (current_price - entry_price) * pos['shares']
+                    days_held = (date.today() - entry_date).days
+                    
+                    conn.execute("""
+                        UPDATE mean_reversion_trades
+                        SET exit_date = ?, exit_price = ?, exit_reason = ?,
+                            return_pct = ?, return_dollars = ?, days_held = ?,
+                            status = 'CLOSED'
+                        WHERE id = ?
+                    """, (
+                        date.today().isoformat(), current_price, reason,
+                        return_pct, return_dollars, days_held, pos['id']
+                    ))
+                    
+                    # Return cash to portfolio
+                    exit_value = current_price * pos['shares']
+                    conn.execute("""
+                        UPDATE portfolio_snapshots
+                        SET cash = cash + ?
+                        WHERE date = (SELECT MAX(date) FROM portfolio_snapshots)
+                    """, (exit_value,))
+                    
+                    print(f"  📈 MR EXIT: {ticker} - {reason} at ${current_price:.2f} ({return_pct:+.1f}%)")
+                    
+                    if send_emails:
+                        msg = f"""
+MEAN REVERSION EXIT: {ticker}
+
+Reason: {reason}
+Entry: ${entry_price:.2f}
+Exit: ${current_price:.2f}
+Return: {return_pct:+.1f}% (${return_dollars:+.2f})
+Days held: {days_held}
+
+---
+Stock Radar V2 - Mean Reversion Strategy
+"""
+                        send_alert("MR_EXIT", ticker, msg)
+    
+    def _should_enter_mean_reversion(
+        self,
+        ticker: str,
+        signal,
+        status,
+        current_mr_positions: int
+    ) -> Tuple[bool, str]:
+        """Decide if we should enter a mean reversion trade."""
+        
+        # Check max MR positions
+        if current_mr_positions >= MAX_MEAN_REVERSION_POSITIONS:
+            return False, "Max MR positions reached"
+        
+        # Check available cash (MR positions are smaller)
+        min_position = 500
+        if status.cash < min_position:
+            return False, "Insufficient cash"
+        
+        # Check signal strength
+        if signal.signal_strength not in ['A', 'B']:
+            return False, f"Low quality ({signal.signal_strength})"
+        
+        # Check if already too many total positions
+        if len(status.open_positions) >= config.V2_MAX_POSITIONS:
+            return False, "Max total positions reached"
+        
+        return True, "OK"
+    
+    def _enter_mean_reversion_trade(
+        self, 
+        ticker: str, 
+        signal, 
+        send_emails: bool
+    ) -> Optional[Dict]:
+        """Execute a mean reversion paper trade entry."""
+        try:
+            entry_price = signal.current_price
+            stop_price = signal.suggested_stop
+            target_price = signal.suggested_target
+            
+            # Position size: Use 30% allocation / max 2 positions = 15% per trade
+            # But cap at 2% risk
+            status = self.engine.get_portfolio_status()
+            allocated_capital = status.total_value * MEAN_REVERSION_ALLOCATION
+            max_position_value = allocated_capital / MAX_MEAN_REVERSION_POSITIONS
+            
+            # Calculate shares
+            shares = int(max_position_value / entry_price)
+            
+            if shares <= 0:
+                print(f"    Position size too small for {ticker}")
+                return None
+            
+            position_value = shares * entry_price
+            
+            # Enter in mean_reversion_trades table
+            with get_db() as conn:
+                cursor = conn.execute("""
+                    INSERT INTO mean_reversion_trades
+                    (ticker, entry_date, entry_price, shares, position_value,
+                     stop_price, target_price, notes)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    ticker, date.today().isoformat(), entry_price, shares,
+                    position_value, stop_price, target_price,
+                    f"RSI={signal.rsi_14}, Drop={signal.drop_pct}%"
+                ))
+                trade_id = cursor.lastrowid
+                
+                # Deduct cash
+                conn.execute("""
+                    UPDATE portfolio_snapshots
+                    SET cash = cash - ?
+                    WHERE date = (SELECT MAX(date) FROM portfolio_snapshots)
+                """, (position_value,))
+            
+            print(f"    ✅ MR ENTRY: {ticker} - {shares} shares @ ${entry_price:.2f}")
+            print(f"       Stop: ${stop_price:.2f} | Target: ${target_price:.2f}")
+            
+            if send_emails:
+                msg = f"""
+MEAN REVERSION ENTRY: {ticker}
+
+Signal: RSI={signal.rsi_14}, {signal.drop_pct:.1f}% drop
+Grade: {signal.signal_strength}
+
+Entry: ${entry_price:.2f}
+Shares: {shares}
+Position: ${position_value:,.2f}
+
+Stop: ${stop_price:.2f} (-5%)
+Target: ${target_price:.2f} (+5%)
+
+Strategy: Buy oversold, sell on bounce
+
+---
+Stock Radar V2 - Mean Reversion Strategy
+"""
+                send_alert("MR_ENTRY", ticker, msg)
+            
+            return {
+                'trade_id': trade_id,
+                'ticker': ticker,
+                'shares': shares,
+                'entry_price': entry_price,
+                'stop': stop_price,
+                'target': target_price,
+                'strategy': 'MEAN_REVERSION',
+            }
+            
+        except Exception as e:
+            print(f"    ❌ Error entering MR trade {ticker}: {e}")
+            return None
+    
+    def run_combined_check(self, send_emails: bool = True) -> Dict:
+        """
+        Run BOTH momentum and mean reversion checks.
+        
+        This is what should be called every 30 min during market hours.
+        """
+        results = {
+            'momentum': {},
+            'mean_reversion': {},
+        }
+        
+        # Run momentum (breakout) check
+        results['momentum'] = self.run_breakout_check(send_emails)
+        
+        # Run mean reversion check
+        results['mean_reversion'] = self.run_mean_reversion_check(send_emails)
         
         return results
     

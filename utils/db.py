@@ -418,6 +418,56 @@ CREATE INDEX IF NOT EXISTS idx_vcp_patterns_valid ON vcp_patterns(pattern_valid,
 CREATE INDEX IF NOT EXISTS idx_watchlist_v2_status ON watchlist_v2(status);
 CREATE INDEX IF NOT EXISTS idx_paper_trades_v2_status ON paper_trades_v2(status);
 CREATE INDEX IF NOT EXISTS idx_alerts_v2_type ON alerts_v2(alert_type, sent_at);
+
+-- ============================================================================
+-- MEAN REVERSION STRATEGY TABLES
+-- ============================================================================
+
+-- Mean reversion signals (oversold bounces)
+CREATE TABLE IF NOT EXISTS mean_reversion_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    date DATE NOT NULL,
+    rsi_14 REAL,
+    rsi_5 REAL,
+    drop_pct REAL,
+    volume_ratio REAL,
+    current_price REAL,
+    suggested_entry REAL,
+    suggested_stop REAL,
+    suggested_target REAL,
+    signal_strength TEXT,
+    is_signal BOOLEAN,
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(ticker, date)
+);
+
+-- Mean reversion paper trades (separate from momentum trades)
+CREATE TABLE IF NOT EXISTS mean_reversion_trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    entry_date DATE NOT NULL,
+    entry_price REAL NOT NULL,
+    shares INTEGER NOT NULL,
+    position_value REAL NOT NULL,
+    stop_price REAL NOT NULL,
+    target_price REAL NOT NULL,
+    exit_date DATE,
+    exit_price REAL,
+    exit_reason TEXT,
+    return_pct REAL,
+    return_dollars REAL,
+    days_held INTEGER,
+    status TEXT DEFAULT 'OPEN',
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Mean reversion indexes
+CREATE INDEX IF NOT EXISTS idx_mr_signals_date ON mean_reversion_signals(date);
+CREATE INDEX IF NOT EXISTS idx_mr_signals_strength ON mean_reversion_signals(signal_strength, date);
+CREATE INDEX IF NOT EXISTS idx_mr_trades_status ON mean_reversion_trades(status);
 """
 
 
@@ -442,6 +492,9 @@ def get_table_counts():
         "paper_trades_v2",
         "alerts_v2",
         "portfolio_snapshots",
+        # Mean reversion tables
+        "mean_reversion_signals",
+        "mean_reversion_trades",
     ]
 
     counts = {}
