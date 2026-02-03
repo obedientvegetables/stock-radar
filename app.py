@@ -837,9 +837,18 @@ def api_v2_watchlist():
     """Get V2 watchlist - stocks passing trend template."""
     from signals.trend_template import get_compliant_stocks
     from datetime import date
-    
+
     stocks = get_compliant_stocks(date.today())
-    
+
+    # Add distance_from_high_pct for dashboard display
+    for stock in stocks:
+        if stock.get('high_52w') and stock.get('price'):
+            high = stock['high_52w']
+            price = stock['price']
+            stock['distance_from_high_pct'] = ((high - price) / high) * 100
+        else:
+            stock['distance_from_high_pct'] = 0
+
     return jsonify({
         "date": date.today().isoformat(),
         "count": len(stocks),

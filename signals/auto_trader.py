@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.db import get_db
 from utils.config import config
 from utils.paper_trading import PaperTradingEngine
-from signals.trend_template import get_compliant_stocks, check_trend_template
+from signals.trend_template import get_compliant_stocks, check_trend_template, save_trend_template_result
 from signals.vcp_detector import detect_vcp
 from signals.breakout import check_breakout
 from signals.mean_reversion import (
@@ -102,6 +102,8 @@ class AutoTrader:
             for ticker in tickers:
                 try:
                     result = check_trend_template(ticker)
+                    # Save to trend_template table
+                    save_trend_template_result(result)
                     if result.passes_template:
                         compliant.append({
                             'ticker': result.ticker,
@@ -163,8 +165,11 @@ class AutoTrader:
         
         results['watchlist'] = watchlist
         results['near_breakout'] = near_breakout
-        
-        # 3. Send morning alert
+
+        # 3. Save watchlist to database
+        self._save_watchlist_to_db(watchlist)
+
+        # 4. Send morning alert
         if send_emails and (watchlist or near_breakout):
             self._send_morning_alert(watchlist, near_breakout)
         
@@ -174,6 +179,43 @@ class AutoTrader:
         
         return results
     
+    def _save_watchlist_to_db(self, watchlist: List[Dict]) -> None:
+        """Save watchlist entries to watchlist_v2 table."""
+        if not watchlist:
+            return
+
+        with get_db() as conn:
+            for entry in watchlist:
+                # Calculate stop and target from pivot
+                pivot = entry.get('pivot', entry['price'])
+                stop_price = round(pivot * 0.93, 2)  # 7% stop
+                target_price = round(pivot * 1.20, 2)  # 20% target
+
+                # Calculate total score
+                total_score = (
+                    entry.get('vcp_score', 0) +
+                    int(entry.get('rs_rating', 0))
+                )
+
+                conn.execute("""
+                    INSERT OR REPLACE INTO watchlist_v2
+                    (ticker, added_date, pivot_price, stop_price, target_price,
+                     trend_score, pattern_score, total_score, status, notes)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'WATCHING', ?)
+                """, (
+                    entry['ticker'],
+                    self.today.isoformat(),
+                    pivot,
+                    stop_price,
+                    target_price,
+                    int(entry.get('rs_rating', 0)),
+                    entry.get('vcp_score', 0),
+                    total_score,
+                    f"Contractions: {entry.get('contractions', 'N/A')}"
+                ))
+
+        print(f"Saved {len(watchlist)} stocks to watchlist_v2")
+
     def run_breakout_check(self, send_emails: bool = True) -> Dict:
         """
         Check for breakouts and auto-enter trades.
