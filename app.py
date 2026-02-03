@@ -16,9 +16,13 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
 from utils.config import config
+from utils.db import init_db
 from collectors.market import get_current_price
 
 app = Flask(__name__)
+
+# Initialize database (creates all tables if they don't exist)
+init_db()
 
 DB_PATH = Path(__file__).parent / "data" / "radar.db"
 OUTPUT_PATH = Path(__file__).parent / "output"
