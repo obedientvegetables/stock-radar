@@ -1,19 +1,18 @@
 #!/bin/bash
-# V2 Combined Check - Run every 30 min during market hours
+# V2 Combined Check - Run every 30 min during market hours (9:30 AM - 4:00 PM ET)
 # Auto-enters trades for BOTH momentum (breakouts) and mean reversion (oversold bounces)
-#
-# Crontab (adjust for UTC - market hours are 9:30 AM - 4:00 PM ET):
-# */30 14-20 * * 1-5 /home/ned_lindau/stock-radar/scripts/cron_v2_check.sh
 
-cd /home/ned_lindau/stock-radar
+PROJECT_DIR="/home/ned_lindau/stock-radar"
+LOG_FILE="$PROJECT_DIR/logs/cron.log"
+
+cd "$PROJECT_DIR"
 source venv/bin/activate
 
-echo "=================================="
-echo "V2 Auto Trader - Combined Check"
-echo "$(date)"
-echo "=================================="
+echo "==================================" >> "$LOG_FILE"
+echo "V2 Auto Trader - Combined Check" >> "$LOG_FILE"
+echo "$(date)" >> "$LOG_FILE"
+echo "==================================" >> "$LOG_FILE"
 
-# Run auto trader combined check (momentum + mean reversion)
 python3 -c "
 from signals.auto_trader import AutoTrader
 trader = AutoTrader()
@@ -25,6 +24,7 @@ trader.run_breakout_check(send_emails=True)
 print()
 print('--- MEAN REVERSION STRATEGY (30%) ---')
 trader.run_mean_reversion_check(send_emails=True)
-" >> logs/cron.log 2>&1
+" >> "$LOG_FILE" 2>&1
 
-echo "Combined check complete"
+echo "Combined check complete" >> "$LOG_FILE"
+echo "" >> "$LOG_FILE"

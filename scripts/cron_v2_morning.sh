@@ -1,23 +1,23 @@
 #!/bin/bash
 # V2 Morning Routine - Run at 6:30 AM ET on weekdays
 # Scans for setups and prepares watchlist
-#
-# Crontab (adjust for your server timezone - example for UTC):
-# 30 11 * * 1-5 /home/ned_lindau/stock-radar/scripts/cron_v2_morning.sh
 
-cd /home/ned_lindau/stock-radar
+PROJECT_DIR="/home/ned_lindau/stock-radar"
+LOG_FILE="$PROJECT_DIR/logs/cron.log"
+
+cd "$PROJECT_DIR"
 source venv/bin/activate
 
-echo "=================================="
-echo "V2 Auto Trader - Morning Routine"
-echo "$(date)"
-echo "=================================="
+echo "==================================" >> "$LOG_FILE"
+echo "V2 Auto Trader - Morning Routine" >> "$LOG_FILE"
+echo "$(date)" >> "$LOG_FILE"
+echo "==================================" >> "$LOG_FILE"
 
-# Run auto trader morning routine
 python3 -c "
 from signals.auto_trader import AutoTrader
 trader = AutoTrader()
 trader.run_morning_routine(send_emails=True)
-" >> logs/cron.log 2>&1
+" >> "$LOG_FILE" 2>&1
 
-echo "Morning routine complete"
+echo "Morning routine complete" >> "$LOG_FILE"
+echo "" >> "$LOG_FILE"
