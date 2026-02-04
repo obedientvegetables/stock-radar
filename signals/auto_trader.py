@@ -226,93 +226,220 @@ class AutoTrader:
 
     def run_breakout_check(self, send_emails: bool = True) -> Dict:
         """
-        Check for breakouts and auto-enter trades.
-        
-        Run every 30 min during market hours.
+        Check for momentum setups and auto-enter trades.
+
+        Entry criteria (setup-based, not waiting for perfect breakout):
+        - Passes trend template (8/8 criteria)
+        - RS rating >= 70
+        - Price within 3% of 52-week high
+        - < 4 momentum positions
+        - Enough cash
+
+        Run via cron - enters best setups at market close.
         """
         results = {
             'check_time': datetime.now().isoformat(),
-            'breakouts_found': [],
+            'setups_found': [],
             'trades_entered': [],
             'skipped': [],
             'errors': [],
         }
-        
+
         print("=" * 50)
-        print("AUTO TRADER - BREAKOUT CHECK")
+        print("AUTO TRADER - MOMENTUM SETUP CHECK")
         print(f"{datetime.now()}")
         print("=" * 50)
-        
+
         # Get current portfolio status
         status = self.engine.get_portfolio_status()
         open_positions = len(status.open_positions)
         open_tickers = [p.ticker for p in status.open_positions]
-        
+        momentum_count = self._count_momentum_positions()
+
         print(f"Open positions: {open_positions}/{config.V2_MAX_POSITIONS}")
+        print(f"Momentum positions: {momentum_count}/{MAX_MOMENTUM_POSITIONS}")
         print(f"Available cash: ${status.cash:,.2f}")
-        
-        if open_positions >= config.V2_MAX_POSITIONS:
-            print("Max positions reached - skipping new entries")
+
+        if momentum_count >= MAX_MOMENTUM_POSITIONS:
+            print("Max momentum positions reached - skipping new entries")
             return results
-        
-        # Get watchlist stocks
+
+        # Get stocks passing trend template
         compliant = get_compliant_stocks(self.today)
-        
-        for stock in compliant[:20]:
+        print(f"\nStocks passing trend template: {len(compliant)}")
+
+        # Filter and score candidates
+        candidates = []
+        for stock in compliant:
             ticker = stock['ticker']
 
             # Skip if already in position
             if ticker in open_tickers:
                 continue
 
-            # Filter by RS rating > 70
+            # Filter by RS rating >= 70
             rs_rating = stock.get('rs_rating', 0) or 0
             if rs_rating < 70:
                 continue
 
+            # Calculate distance from 52-week high
+            price = stock.get('price', 0)
+            high_52w = stock.get('high_52w', 0)
+            if price <= 0 or high_52w <= 0:
+                continue
+
+            distance_from_high_pct = ((high_52w - price) / high_52w) * 100
+
+            # Filter: must be within 3% of 52-week high
+            if distance_from_high_pct > 3.0:
+                continue
+
+            # Check earnings safety
             try:
-                # Get VCP for pivot price
-                vcp = detect_vcp(ticker)
-                
-                if vcp.pivot_price <= 0 or vcp.pattern_score < 40:
-                    continue
-                
-                # Check for breakout
-                signal = check_breakout(ticker, vcp.pivot_price)
-                
-                if signal.is_breakout and signal.breakout_quality in ['A', 'B']:
-                    print(f"  🚀 BREAKOUT: {ticker} - Grade {signal.breakout_quality}")
-                    
-                    results['breakouts_found'].append({
+                earnings_safe, earnings_date = is_earnings_safe(ticker)
+                if not earnings_safe:
+                    results['skipped'].append({
                         'ticker': ticker,
-                        'price': signal.current_price,
-                        'pivot': signal.pivot_price,
-                        'volume_ratio': signal.volume_ratio,
-                        'quality': signal.breakout_quality,
+                        'reason': f"Earnings soon ({earnings_date})",
                     })
-                    
-                    # Check if we should enter
-                    should_enter, reason = self._should_enter_trade(ticker, signal, status)
-                    
-                    if should_enter:
-                        trade_result = self._enter_trade(ticker, signal, send_emails)
-                        if trade_result:
-                            results['trades_entered'].append(trade_result)
-                    else:
-                        results['skipped'].append({
-                            'ticker': ticker,
-                            'reason': reason,
-                        })
-                        print(f"    Skipped: {reason}")
-                        
+                    continue
+            except Exception:
+                pass  # If we can't check earnings, proceed
+
+            candidates.append({
+                'ticker': ticker,
+                'price': price,
+                'high_52w': high_52w,
+                'distance_from_high_pct': distance_from_high_pct,
+                'rs_rating': rs_rating,
+                'criteria_passed': stock.get('criteria_passed', 8),
+            })
+
+        # Sort by RS rating (highest first) - best setups first
+        candidates.sort(key=lambda x: x['rs_rating'], reverse=True)
+
+        print(f"Candidates (RS >= 70, within 3% of high): {len(candidates)}")
+
+        if candidates:
+            print("\nTop candidates:")
+            for c in candidates[:5]:
+                print(f"  {c['ticker']:<6} RS: {c['rs_rating']:>5.1f}  "
+                      f"Price: ${c['price']:>8.2f}  "
+                      f"From high: {c['distance_from_high_pct']:>5.2f}%")
+
+        # Enter trades for top candidates
+        slots_available = MAX_MOMENTUM_POSITIONS - momentum_count
+        print(f"\nSlots available: {slots_available}")
+
+        for candidate in candidates[:slots_available]:
+            ticker = candidate['ticker']
+
+            # Check if we still have cash
+            min_position = 1000
+            if status.cash < min_position:
+                results['skipped'].append({
+                    'ticker': ticker,
+                    'reason': "Insufficient cash",
+                })
+                print(f"  {ticker}: Skipped - Insufficient cash")
+                break
+
+            results['setups_found'].append(candidate)
+
+            try:
+                trade_result = self._enter_setup_trade(ticker, candidate, send_emails)
+                if trade_result:
+                    results['trades_entered'].append(trade_result)
+                    # Update cash for next iteration
+                    status = self.engine.get_portfolio_status()
             except Exception as e:
                 results['errors'].append(f"{ticker}: {str(e)[:50]}")
-        
+                print(f"  {ticker}: Error - {str(e)[:50]}")
+
         print()
-        print(f"Breakouts: {len(results['breakouts_found'])}")
+        print("=" * 50)
+        print(f"Setups found: {len(results['setups_found'])}")
         print(f"Trades entered: {len(results['trades_entered'])}")
-        
+        print(f"Skipped: {len(results['skipped'])}")
+
         return results
+
+    def _enter_setup_trade(self, ticker: str, candidate: Dict, send_emails: bool) -> Optional[Dict]:
+        """
+        Enter a momentum setup trade.
+
+        Args:
+            ticker: Stock symbol
+            candidate: Dict with price, rs_rating, high_52w, etc.
+            send_emails: Whether to send alert emails
+        """
+        try:
+            entry_price = candidate['price']
+            # Set stop at 7% below entry
+            stop_price = round(entry_price * (1 - config.V2_DEFAULT_STOP_PCT), 2)
+            # Set target at 20% above entry
+            target_price = round(entry_price * (1 + config.V2_DEFAULT_TARGET_PCT), 2)
+
+            # Calculate position size based on 2% risk
+            shares = self.engine.calculate_position_size(entry_price, stop_price)
+
+            if shares <= 0:
+                print(f"  {ticker}: Position size too small")
+                return None
+
+            position_value = shares * entry_price
+
+            # Enter the trade
+            trade_id = self.engine.enter_trade(
+                ticker=ticker,
+                entry_price=entry_price,
+                shares=shares,
+                stop_price=stop_price,
+                target_price=target_price,
+                notes=f"Momentum setup. RS: {candidate['rs_rating']:.0f}, {candidate['distance_from_high_pct']:.1f}% from high"
+            )
+
+            print(f"  ✅ ENTERED: {ticker}")
+            print(f"     {shares} shares @ ${entry_price:.2f} = ${position_value:,.2f}")
+            print(f"     Stop: ${stop_price:.2f} (-7%) | Target: ${target_price:.2f} (+20%)")
+            print(f"     RS: {candidate['rs_rating']:.0f} | From high: {candidate['distance_from_high_pct']:.1f}%")
+
+            # Send alert
+            if send_emails:
+                msg = f"""
+MOMENTUM ENTRY: {ticker}
+
+Setup Quality:
+- RS Rating: {candidate['rs_rating']:.0f}
+- Distance from 52-week high: {candidate['distance_from_high_pct']:.1f}%
+- Trend Template: {candidate.get('criteria_passed', 8)}/8
+
+Trade Details:
+- Entry: ${entry_price:.2f}
+- Shares: {shares}
+- Position: ${position_value:,.2f}
+- Stop: ${stop_price:.2f} (-7%)
+- Target: ${target_price:.2f} (+20%)
+
+---
+Stock Radar V2 - Momentum Strategy
+"""
+                send_alert("TRADE_ENTRY", ticker, msg)
+
+            return {
+                'trade_id': trade_id,
+                'ticker': ticker,
+                'shares': shares,
+                'entry_price': entry_price,
+                'stop': stop_price,
+                'target': target_price,
+                'rs_rating': candidate['rs_rating'],
+                'distance_from_high_pct': candidate['distance_from_high_pct'],
+            }
+
+        except Exception as e:
+            print(f"  ❌ Error entering {ticker}: {e}")
+            return None
     
     def run_mean_reversion_check(self, send_emails: bool = True) -> Dict:
         """

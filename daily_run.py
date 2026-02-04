@@ -2136,20 +2136,26 @@ def v2_combined(email):
 @click.option("--dry-run", is_flag=True, help="Show what would be traded without executing")
 def v2_auto_trade(email, dry_run):
     """
-    Auto-trade based on V2 momentum strategy.
+    Auto-trade based on V2 momentum strategy (setup quality).
 
-    For stocks passing Trend Template with RS > 70:
-    - Checks for breakouts above pivot/52-week high area
-    - Confirms volume >= 1.5x average
-    - Auto-enters if < 4 momentum positions and enough cash
+    Entry criteria (ALL must be true):
+    - Passes Trend Template (8/8 criteria)
+    - RS rating >= 70
+    - Price within 3% of 52-week high
+    - < 4 momentum positions open
+    - Enough cash for position
+
+    Trade parameters:
     - Position size: 2% risk per trade
     - Stop: 7% below entry
     - Target: 20% above entry
 
-    Run via cron every 30 min during market hours.
+    Run via cron at market close to enter best setups.
     """
     from signals.auto_trader import AutoTrader
     from utils.paper_trading import PaperTradingEngine
+    from signals.trend_template import get_compliant_stocks
+    from datetime import date as dt
 
     click.echo("=" * 50)
     click.echo("V2 AUTO-TRADE - MOMENTUM STRATEGY")
@@ -2170,54 +2176,77 @@ def v2_auto_trade(email, dry_run):
         click.echo("[DRY RUN - No trades will be executed]")
         click.echo()
 
-        # Get compliant stocks and show what would be checked
-        from signals.trend_template import get_compliant_stocks
-        from datetime import date as dt
-
+        # Get compliant stocks and analyze candidates
         stocks = get_compliant_stocks(dt.today())
-        high_rs = [s for s in stocks if (s.get('rs_rating', 0) or 0) >= 70]
+        open_tickers = [p.ticker for p in status.open_positions]
+
+        # Filter candidates
+        candidates = []
+        for s in stocks:
+            ticker = s['ticker']
+            if ticker in open_tickers:
+                continue
+
+            rs_rating = s.get('rs_rating', 0) or 0
+            if rs_rating < 70:
+                continue
+
+            price = s.get('price', 0)
+            high_52w = s.get('high_52w', 0)
+            if price <= 0 or high_52w <= 0:
+                continue
+
+            distance_pct = ((high_52w - price) / high_52w) * 100
+            if distance_pct <= 3.0:
+                candidates.append({
+                    'ticker': ticker,
+                    'rs_rating': rs_rating,
+                    'price': price,
+                    'high_52w': high_52w,
+                    'distance_pct': distance_pct,
+                })
+
+        # Sort by RS rating
+        candidates.sort(key=lambda x: x['rs_rating'], reverse=True)
 
         click.echo(f"Stocks passing Trend Template: {len(stocks)}")
-        click.echo(f"Stocks with RS > 70: {len(high_rs)}")
+        click.echo(f"With RS >= 70: {len([s for s in stocks if (s.get('rs_rating', 0) or 0) >= 70])}")
+        click.echo(f"Within 3% of 52-week high: {len(candidates)}")
         click.echo()
 
-        if high_rs:
-            click.echo("Candidates for breakout check:")
-            for s in high_rs[:10]:
-                click.echo(f"  {s['ticker']:<6} RS: {s.get('rs_rating', 0):>5.1f}  Price: ${s['price']:>8.2f}")
-
-            if len(high_rs) > 10:
-                click.echo(f"  ... and {len(high_rs) - 10} more")
+        if candidates:
+            click.echo("WOULD ENTER (top candidates by RS):")
+            click.echo("-" * 60)
+            click.echo(f"{'Ticker':<8} {'RS':>6} {'Price':>10} {'52w High':>10} {'From High':>10}")
+            click.echo("-" * 60)
+            for c in candidates[:4]:  # Max 4 momentum positions
+                click.echo(f"{c['ticker']:<8} {c['rs_rating']:>6.1f} "
+                          f"${c['price']:>9.2f} ${c['high_52w']:>9.2f} "
+                          f"{c['distance_pct']:>9.2f}%")
+            click.echo()
+            if len(candidates) > 4:
+                click.echo(f"Additional candidates: {len(candidates) - 4}")
+        else:
+            click.echo("No candidates meet all criteria")
         return
 
     # Run auto-trader
     trader = AutoTrader()
     results = trader.run_breakout_check(send_emails=email)
 
+    # Final summary (auto_trader already prints detailed output)
     click.echo()
-    click.echo("=" * 50)
-    click.echo("RESULTS")
-    click.echo("=" * 50)
-    click.echo(f"Breakouts found: {len(results.get('breakouts_found', []))}")
-    click.echo(f"Trades entered: {len(results.get('trades_entered', []))}")
-    click.echo(f"Skipped: {len(results.get('skipped', []))}")
-
     if results.get('trades_entered'):
-        click.echo()
-        click.echo("Trades entered:")
+        click.echo("TRADES ENTERED:")
         for t in results['trades_entered']:
             click.echo(f"  {t['ticker']:<6} {t['shares']} sh @ ${t['entry_price']:.2f}  "
-                      f"Stop: ${t['stop']:.2f}  Target: ${t['target']:.2f}")
-
-    if results.get('skipped'):
-        click.echo()
-        click.echo("Skipped (with reason):")
-        for s in results['skipped'][:5]:
-            click.echo(f"  {s['ticker']:<6}: {s['reason']}")
+                      f"RS: {t.get('rs_rating', 'N/A')}")
 
     if results.get('errors'):
         click.echo()
         click.echo(f"Errors: {len(results['errors'])}")
+        for e in results['errors'][:3]:
+            click.echo(f"  {e}")
 
 
 if __name__ == "__main__":

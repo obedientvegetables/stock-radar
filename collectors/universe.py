@@ -6,8 +6,10 @@ Filters by price, market cap, and volume.
 """
 
 import time
+from io import StringIO
 from typing import List, Dict, Optional, Tuple
 from datetime import date
+import requests
 import yfinance as yf
 import pandas as pd
 
@@ -18,7 +20,11 @@ SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 def get_sp500_tickers() -> List[str]:
     """Fetch current S&P 500 constituents from Wikipedia."""
     try:
-        tables = pd.read_html(SP500_URL)
+        # Use requests with User-Agent to avoid 403 Forbidden
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        response = requests.get(SP500_URL, headers=headers)
+        response.raise_for_status()
+        tables = pd.read_html(StringIO(response.text))
         df = tables[0]
         # Handle tickers with dots (e.g., BRK.B -> BRK-B for yfinance)
         tickers = df['Symbol'].str.replace('.', '-', regex=False).tolist()

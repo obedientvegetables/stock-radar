@@ -183,12 +183,12 @@ class PaperTradingEngine:
                 entry_price,  # highest_price starts at entry
                 notes,
             ))
-            
+
             trade_id = cursor.lastrowid
-            
-            # Update cash
-            self._update_cash(-position_value)
-        
+
+        # Update cash OUTSIDE the db block to avoid nested connections
+        self._update_cash(-position_value)
+
         return trade_id
     
     def exit_trade(
@@ -246,11 +246,13 @@ class PaperTradingEngine:
                 days_held,
                 trade_id,
             ))
-            
-            # Return cash
+
+            # Store exit_value for cash update
             exit_value = exit_price * shares
-            self._update_cash(exit_value)
-        
+
+        # Return cash OUTSIDE the db block to avoid nested connections
+        self._update_cash(exit_value)
+
         return TradeResult(
             trade_id=trade_id,
             ticker=trade['ticker'],
