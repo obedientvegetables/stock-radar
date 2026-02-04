@@ -3,3 +3,4 @@ git add .
 git commit -m "Initial commit - stock radar project"
 
 
+data/radar.db
