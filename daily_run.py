@@ -2131,5 +2131,94 @@ def v2_combined(email):
     click.echo(f"Mean reversion entries: {len(mr_results.get('trades_entered', []))}")
 
 
+@cli.command("v2-auto-trade")
+@click.option("--email/--no-email", default=True, help="Send email alerts")
+@click.option("--dry-run", is_flag=True, help="Show what would be traded without executing")
+def v2_auto_trade(email, dry_run):
+    """
+    Auto-trade based on V2 momentum strategy.
+
+    For stocks passing Trend Template with RS > 70:
+    - Checks for breakouts above pivot/52-week high area
+    - Confirms volume >= 1.5x average
+    - Auto-enters if < 4 momentum positions and enough cash
+    - Position size: 2% risk per trade
+    - Stop: 7% below entry
+    - Target: 20% above entry
+
+    Run via cron every 30 min during market hours.
+    """
+    from signals.auto_trader import AutoTrader
+    from utils.paper_trading import PaperTradingEngine
+
+    click.echo("=" * 50)
+    click.echo("V2 AUTO-TRADE - MOMENTUM STRATEGY")
+    click.echo(f"{datetime.now()}")
+    click.echo("=" * 50)
+    click.echo()
+
+    # Show portfolio status
+    engine = PaperTradingEngine()
+    status = engine.get_portfolio_status()
+
+    click.echo(f"Portfolio: ${status.total_value:,.2f}")
+    click.echo(f"Cash: ${status.cash:,.2f}")
+    click.echo(f"Open positions: {len(status.open_positions)}/{config.V2_MAX_POSITIONS}")
+    click.echo()
+
+    if dry_run:
+        click.echo("[DRY RUN - No trades will be executed]")
+        click.echo()
+
+        # Get compliant stocks and show what would be checked
+        from signals.trend_template import get_compliant_stocks
+        from datetime import date as dt
+
+        stocks = get_compliant_stocks(dt.today())
+        high_rs = [s for s in stocks if (s.get('rs_rating', 0) or 0) >= 70]
+
+        click.echo(f"Stocks passing Trend Template: {len(stocks)}")
+        click.echo(f"Stocks with RS > 70: {len(high_rs)}")
+        click.echo()
+
+        if high_rs:
+            click.echo("Candidates for breakout check:")
+            for s in high_rs[:10]:
+                click.echo(f"  {s['ticker']:<6} RS: {s.get('rs_rating', 0):>5.1f}  Price: ${s['price']:>8.2f}")
+
+            if len(high_rs) > 10:
+                click.echo(f"  ... and {len(high_rs) - 10} more")
+        return
+
+    # Run auto-trader
+    trader = AutoTrader()
+    results = trader.run_breakout_check(send_emails=email)
+
+    click.echo()
+    click.echo("=" * 50)
+    click.echo("RESULTS")
+    click.echo("=" * 50)
+    click.echo(f"Breakouts found: {len(results.get('breakouts_found', []))}")
+    click.echo(f"Trades entered: {len(results.get('trades_entered', []))}")
+    click.echo(f"Skipped: {len(results.get('skipped', []))}")
+
+    if results.get('trades_entered'):
+        click.echo()
+        click.echo("Trades entered:")
+        for t in results['trades_entered']:
+            click.echo(f"  {t['ticker']:<6} {t['shares']} sh @ ${t['entry_price']:.2f}  "
+                      f"Stop: ${t['stop']:.2f}  Target: ${t['target']:.2f}")
+
+    if results.get('skipped'):
+        click.echo()
+        click.echo("Skipped (with reason):")
+        for s in results['skipped'][:5]:
+            click.echo(f"  {s['ticker']:<6}: {s['reason']}")
+
+    if results.get('errors'):
+        click.echo()
+        click.echo(f"Errors: {len(results['errors'])}")
+
+
 if __name__ == "__main__":
     cli()

@@ -132,7 +132,7 @@ def check_breakout(
         
         # Calculate entry parameters
         entry = current_price
-        stop = pivot_price * (1 - config.V2_DEFAULT_STOP_PCT)  # 7% below pivot
+        stop = entry * (1 - config.V2_DEFAULT_STOP_PCT)  # 7% below entry
         target = entry * (1 + config.V2_DEFAULT_TARGET_PCT)  # 20% above entry
         
         risk = entry - stop

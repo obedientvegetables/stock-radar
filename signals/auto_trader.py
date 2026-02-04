@@ -55,17 +55,25 @@ MAX_MEAN_REVERSION_POSITIONS = 2  # Out of 6 total
 class AutoTrader:
     """
     Automated paper trading system.
-    
+
     Runs on schedule to:
     1. Scan for new setups
     2. Monitor for breakouts
     3. Enter trades automatically
     4. Manage stops and targets
     """
-    
+
     def __init__(self):
         self.engine = PaperTradingEngine()
         self.today = date.today()
+
+    def _count_momentum_positions(self) -> int:
+        """Count open momentum (breakout) positions."""
+        with get_db() as conn:
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM paper_trades_v2 WHERE status = 'OPEN' AND notes LIKE '%breakout%'"
+            )
+            return cursor.fetchone()[0]
     
     def run_morning_routine(self, send_emails: bool = True) -> Dict:
         """
@@ -252,11 +260,16 @@ class AutoTrader:
         
         for stock in compliant[:20]:
             ticker = stock['ticker']
-            
+
             # Skip if already in position
             if ticker in open_tickers:
                 continue
-            
+
+            # Filter by RS rating > 70
+            rs_rating = stock.get('rs_rating', 0) or 0
+            if rs_rating < 70:
+                continue
+
             try:
                 # Get VCP for pivot price
                 vcp = detect_vcp(ticker)
@@ -659,38 +672,43 @@ Stock Radar V2 - Mean Reversion Strategy
         return results
     
     def _should_enter_trade(
-        self, 
-        ticker: str, 
-        signal, 
+        self,
+        ticker: str,
+        signal,
         status
     ) -> Tuple[bool, str]:
         """
         Decide if we should enter a trade.
-        
+
         Returns (should_enter, reason)
         """
-        # Check max positions
+        # Check max total positions
         if len(status.open_positions) >= config.V2_MAX_POSITIONS:
             return False, "Max positions reached"
-        
+
+        # Check max momentum positions (4)
+        momentum_count = self._count_momentum_positions()
+        if momentum_count >= MAX_MOMENTUM_POSITIONS:
+            return False, f"Max momentum positions ({MAX_MOMENTUM_POSITIONS})"
+
         # Check available cash
         min_position = 1000  # Minimum $1000 position
         if status.cash < min_position:
             return False, "Insufficient cash"
-        
+
         # Check if extended (too far above pivot)
         if signal.breakout_pct > 5:
             return False, f"Extended {signal.breakout_pct:.1f}%"
-        
+
         # Check earnings
         earnings_safe, _ = is_earnings_safe(ticker)
         if not earnings_safe:
             return False, "Near earnings"
-        
+
         # Check breakout quality
         if signal.breakout_quality not in ['A', 'B']:
             return False, f"Low quality ({signal.breakout_quality})"
-        
+
         return True, "OK"
     
     def _enter_trade(self, ticker: str, signal, send_emails: bool) -> Optional[Dict]:
@@ -699,8 +717,10 @@ Stock Radar V2 - Mean Reversion Strategy
         """
         try:
             entry_price = signal.current_price
-            stop_price = signal.suggested_stop
-            target_price = signal.suggested_target
+            # Set stop at 7% below entry (not pivot)
+            stop_price = round(entry_price * (1 - config.V2_DEFAULT_STOP_PCT), 2)
+            # Set target at 20% above entry
+            target_price = round(entry_price * (1 + config.V2_DEFAULT_TARGET_PCT), 2)
             
             # Calculate position size
             shares = self.engine.calculate_position_size(entry_price, stop_price)
@@ -716,7 +736,7 @@ Stock Radar V2 - Mean Reversion Strategy
                 shares=shares,
                 stop_price=stop_price,
                 target_price=target_price,
-                notes=f"Auto-entry on breakout. Quality: {signal.breakout_quality}"
+                notes=f"Momentum breakout. Quality: {signal.breakout_quality}, Vol: {signal.volume_ratio:.1f}x"
             )
             
             print(f"    ✅ ENTERED: {ticker} - {shares} shares @ ${entry_price:.2f}")
